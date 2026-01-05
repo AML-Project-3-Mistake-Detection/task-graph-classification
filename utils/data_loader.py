@@ -149,8 +149,14 @@ class TaskGraphDataset(Dataset):
         max_steps = len(standard_graph['steps'])
         features = torch.zeros((num_nodes, max_steps), dtype=torch.float)
         for i, step_id in enumerate(observed_steps):
-            if step_id < max_steps:
-                features[i, step_id] = 1.0
+            # Convert step_id to int if it's a string
+            try:
+                step_idx = int(step_id)
+                if step_idx < max_steps:
+                    features[i, step_idx] = 1.0
+            except (ValueError, TypeError):
+                # If conversion fails, skip this step
+                continue
         
         return features
     
