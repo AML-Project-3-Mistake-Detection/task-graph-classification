@@ -63,7 +63,8 @@ class Config:
         """Update config from command line arguments"""
         config = cls()
         for key, value in vars(args).items():
-            if hasattr(config, key.upper()):
+            # Only override if value is not None (i.e., was explicitly provided)
+            if value is not None and hasattr(config, key.upper()):
                 setattr(config, key.upper(), value)
         return config
     
