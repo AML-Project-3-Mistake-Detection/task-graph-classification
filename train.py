@@ -88,11 +88,21 @@ def main(args):
     # Set random seed
     torch.manual_seed(config.SEED)
     
+    # Handle paths - ensure they're absolute
+    observed_graphs_dir = Path(config.OBSERVED_GRAPHS_DIR).resolve()
+    annotations_dir = Path(config.ANNOTATIONS_DIR).resolve()
+    
+    print(f"\nData paths:")
+    print(f"  Annotations: {annotations_dir}")
+    print(f"  Observed graphs: {observed_graphs_dir}")
+    print(f"  Annotations exists: {annotations_dir.exists()}")
+    print(f"  Observed graphs exists: {observed_graphs_dir.exists()}")
+    
     # Create dataset
     print("\nLoading dataset...")
     dataset = TaskGraphDataset(
-        task_graphs_dir=str(config.ANNOTATIONS_DIR),
-        observed_graphs_dir=str(config.OBSERVED_GRAPHS_DIR)
+        task_graphs_dir=str(annotations_dir),
+        observed_graphs_dir=str(observed_graphs_dir)
     )
     
     print(f"Dataset size: {len(dataset)}")

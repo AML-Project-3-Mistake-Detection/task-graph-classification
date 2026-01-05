@@ -33,8 +33,8 @@ class TaskGraphDataset(Dataset):
             transform: Optional transform to apply to data
             pre_transform: Optional pre-transform
         """
-        self.task_graphs_dir = Path(task_graphs_dir)
-        self.observed_graphs_dir = Path(observed_graphs_dir)
+        self.task_graphs_dir = Path(task_graphs_dir).resolve()
+        self.observed_graphs_dir = Path(observed_graphs_dir).resolve()
         
         # Load standard task graphs
         self.standard_graphs = self._load_standard_task_graphs()
@@ -61,12 +61,20 @@ class TaskGraphDataset(Dataset):
         observed_graphs = []
         
         if not self.observed_graphs_dir.exists():
-            print(f"Warning: {self.observed_graphs_dir} does not exist")
+            print(f"ERROR: {self.observed_graphs_dir} does not exist")
             return observed_graphs
         
-        for json_file in self.observed_graphs_dir.glob("*.json"):
-            with open(json_file, 'r') as f:
-                observed_graphs.append(json.load(f))
+        json_files = list(self.observed_graphs_dir.glob("*.json"))
+        print(f"Found {len(json_files)} JSON files in {self.observed_graphs_dir}")
+        
+        for json_file in json_files:
+            try:
+                with open(json_file, 'r') as f:
+                    graph_data = json.load(f)
+                    observed_graphs.append(graph_data)
+            except Exception as e:
+                print(f"Warning: Failed to load {json_file}: {e}")
+                continue
         
         print(f"Loaded {len(observed_graphs)} observed graphs")
         return observed_graphs
