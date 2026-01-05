@@ -39,6 +39,13 @@ class TaskGraphDataset(Dataset):
         # Load standard task graphs
         self.standard_graphs = self._load_standard_task_graphs()
         
+        # Calculate max steps across all recipes (for consistent feature dimensions)
+        self.max_steps = max(
+            len(graph.get('steps', {})) 
+            for graph in self.standard_graphs.values()
+        ) if self.standard_graphs else 20
+        print(f"Max steps across all recipes: {self.max_steps}")
+        
         # Load Substep 3 outputs
         self.observed_graphs = self._load_substep3_outputs()
         
@@ -109,14 +116,14 @@ class TaskGraphDataset(Dataset):
         # Extract edges
         edge_index = self._extract_edges(observed_graph)
         
-        # Get label
-        y = torch.tensor([observed_graph.get('label', 1)], dtype=torch.long)
+        # Get label (as scalar, not tensor)
+        y = observed_graph.get('label', 1)
         
         # Create PyG Data object
         data = Data(
             x=x,
             edge_index=edge_index,
-            y=y,
+            y=torch.tensor(y, dtype=torch.long),
             recipe_id=recipe_id,
             video_id=observed_graph.get('video_id', 'unknown')
         )
@@ -130,7 +137,7 @@ class TaskGraphDataset(Dataset):
         Extract node features for the observed graph
         
         Options:
-        1. One-hot encoding of step IDs
+        1. One-hot encoding of step IDs (using global max_steps)
         2. Pre-computed text embeddings (from Substep 3)
         3. Learnable embeddings
         """
@@ -145,14 +152,13 @@ class TaskGraphDataset(Dataset):
                 features.append(embeddings[str(step_id)])
             return torch.tensor(features, dtype=torch.float)
         
-        # Option 2: One-hot encoding (fallback)
-        max_steps = len(standard_graph['steps'])
-        features = torch.zeros((num_nodes, max_steps), dtype=torch.float)
+        # Option 2: One-hot encoding using global max_steps for consistency
+        features = torch.zeros((num_nodes, self.max_steps), dtype=torch.float)
         for i, step_id in enumerate(observed_steps):
             # Convert step_id to int if it's a string
             try:
                 step_idx = int(step_id)
-                if step_idx < max_steps:
+                if step_idx < self.max_steps:
                     features[i, step_idx] = 1.0
             except (ValueError, TypeError):
                 # If conversion fails, skip this step
