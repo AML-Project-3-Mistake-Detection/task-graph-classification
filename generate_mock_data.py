@@ -17,15 +17,23 @@ def load_standard_task_graph(json_path: str) -> Dict:
 
 def create_correct_graph(recipe_name: str, task_graph: Dict) -> Dict:
     """Create a correct observed graph (matches standard)"""
+    steps = task_graph["steps"].copy()
+    # Remove START and END for observed_steps
+    observed_steps = [k for k in steps.keys() if k not in ["0", "END"]]
+    
+    # Convert edges to integers
+    edges = [[int(src), int(dst)] for src, dst in task_graph["edges"]]
+    
     return {
         "recording_id": f"{recipe_name}_correct_{random.randint(1000, 9999)}",
-        "recipe_name": recipe_name,
-        "steps": task_graph["steps"].copy(),
-        "edges": task_graph["edges"].copy(),
+        "recipe_id": recipe_name,
+        "steps": steps,
+        "edges": edges,
+        "observed_steps": observed_steps,
         "label": 1,  # Correct execution
         "metadata": {
             "execution_time": random.randint(180, 600),
-            "num_steps": len(task_graph["steps"])
+            "num_steps": len(observed_steps)
         }
     }
 
@@ -41,7 +49,8 @@ def create_incorrect_graph(recipe_name: str, task_graph: Dict, error_type: str =
     - missing_step: Remove a step
     """
     steps = task_graph["steps"].copy()
-    edges = [edge.copy() for edge in task_graph["edges"]]
+    # Convert edges to integers
+    edges = [[int(src), int(dst)] for src, dst in task_graph["edges"]]
     
     if error_type == "missing_edge" and len(edges) > 3:
         # Remove 1-2 edges (skipped steps)
@@ -52,7 +61,7 @@ def create_incorrect_graph(recipe_name: str, task_graph: Dict, error_type: str =
     
     elif error_type == "extra_edge":
         # Add 1-2 wrong edges
-        step_ids = [k for k in steps.keys() if k not in ["0", "END"]]
+        step_ids = [int(k) for k in steps.keys() if k not in ["0", "END"]]
         num_add = random.randint(1, 2)
         for _ in range(num_add):
             if len(step_ids) >= 2:
@@ -76,18 +85,23 @@ def create_incorrect_graph(recipe_name: str, task_graph: Dict, error_type: str =
             remove_id = random.choice(step_ids)
             del steps[remove_id]
             # Remove edges connected to this step
-            edges = [e for e in edges if str(e[0]) != remove_id and str(e[1]) != remove_id]
+            remove_id_int = int(remove_id)
+            edges = [e for e in edges if e[0] != remove_id_int and e[1] != remove_id_int]
+    
+    # Remove START and END for observed_steps
+    observed_steps = [k for k in steps.keys() if k not in ["0", "END"]]
     
     return {
         "recording_id": f"{recipe_name}_incorrect_{error_type}_{random.randint(1000, 9999)}",
-        "recipe_name": recipe_name,
+        "recipe_id": recipe_name,
         "steps": steps,
         "edges": edges,
+        "observed_steps": observed_steps,
         "label": 0,  # Incorrect execution
         "error_type": error_type,
         "metadata": {
             "execution_time": random.randint(120, 700),
-            "num_steps": len(steps)
+            "num_steps": len(observed_steps)
         }
     }
 

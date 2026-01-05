@@ -37,7 +37,7 @@ class Config:
     DROPOUT = 0.3         # Dropout rate for regularization
     
     # Node feature settings
-    NODE_FEATURE_TYPE = "text_embedding"  # Options: one_hot, text_embedding, learned
+    NODE_FEATURE_TYPE = "one_hot"  # Options: one_hot, text_embedding, learned
     EMBEDDING_DIM = 768  # For text embeddings (BERT/EgoVLP size)
     
     # Training settings

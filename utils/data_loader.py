@@ -153,15 +153,20 @@ class TaskGraphDataset(Dataset):
         Returns:
             edge_index: [2, num_edges] tensor
         """
-        matched_edges = observed_graph.get('matched_edges', [])
+        # Try to get edges from the graph
+        edges = observed_graph.get('edges', [])
         
-        if not matched_edges:
-            # Create a simple chain if no edges provided
+        if not edges:
+            # Fallback: Create a simple chain if no edges provided
             observed_steps = observed_graph.get('observed_steps', [])
-            matched_edges = [[i, i+1] for i in range(len(observed_steps)-1)]
+            edges = [[i, i+1] for i in range(len(observed_steps)-1)]
         
         # Convert to torch tensor [2, num_edges]
-        edge_index = torch.tensor(matched_edges, dtype=torch.long).t().contiguous()
+        if edges:
+            edge_index = torch.tensor(edges, dtype=torch.long).t().contiguous()
+        else:
+            # Empty graph case
+            edge_index = torch.zeros((2, 0), dtype=torch.long)
         
         return edge_index
 
