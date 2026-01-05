@@ -33,10 +33,16 @@ wheels/
 *.ipynb
 
 # Data
-data/substep3_outputs/
-data/processed/
-results/
-checkpoints/
+data/observed_graphs/*
+!data/observed_graphs/.gitkeep
+
+data/processed/*
+!data/processed/.gitkeep
+
+results/*
+!results/checkpoints/
+results/checkpoints/*
+!results/checkpoints/.gitkeep  
 
 # IDE
 .vscode/
