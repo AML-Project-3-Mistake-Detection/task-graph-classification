@@ -1,0 +1,199 @@
+"""
+Generate Mock Data for Task Graph Classification
+Simulates Substep 3 outputs (observed task graphs)
+"""
+import json
+import random
+import os
+from pathlib import Path
+from typing import Dict, List, Tuple
+
+
+def load_standard_task_graph(json_path: str) -> Dict:
+    """Load a standard task graph"""
+    with open(json_path, 'r') as f:
+        return json.load(f)
+
+
+def create_correct_graph(recipe_name: str, task_graph: Dict) -> Dict:
+    """Create a correct observed graph (matches standard)"""
+    return {
+        "recording_id": f"{recipe_name}_correct_{random.randint(1000, 9999)}",
+        "recipe_name": recipe_name,
+        "steps": task_graph["steps"].copy(),
+        "edges": task_graph["edges"].copy(),
+        "label": 1,  # Correct execution
+        "metadata": {
+            "execution_time": random.randint(180, 600),
+            "num_steps": len(task_graph["steps"])
+        }
+    }
+
+
+def create_incorrect_graph(recipe_name: str, task_graph: Dict, error_type: str = "random") -> Dict:
+    """
+    Create an incorrect observed graph
+    
+    Error types:
+    - missing_edge: Remove some edges (skipped steps)
+    - extra_edge: Add wrong dependencies
+    - wrong_order: Swap some edges
+    - missing_step: Remove a step
+    """
+    steps = task_graph["steps"].copy()
+    edges = [edge.copy() for edge in task_graph["edges"]]
+    
+    if error_type == "missing_edge" and len(edges) > 3:
+        # Remove 1-2 edges (skipped steps)
+        num_remove = random.randint(1, 2)
+        for _ in range(num_remove):
+            if edges:
+                edges.pop(random.randint(0, len(edges) - 1))
+    
+    elif error_type == "extra_edge":
+        # Add 1-2 wrong edges
+        step_ids = [k for k in steps.keys() if k not in ["0", "END"]]
+        num_add = random.randint(1, 2)
+        for _ in range(num_add):
+            if len(step_ids) >= 2:
+                src = random.choice(step_ids)
+                dst = random.choice(step_ids)
+                if src != dst and [src, dst] not in edges:
+                    edges.append([src, dst])
+    
+    elif error_type == "wrong_order":
+        # Swap 1-2 edges
+        if len(edges) >= 4:
+            num_swap = random.randint(1, 2)
+            for _ in range(num_swap):
+                idx = random.randint(0, len(edges) - 1)
+                edges[idx] = [edges[idx][1], edges[idx][0]]  # Reverse edge
+    
+    elif error_type == "missing_step":
+        # Remove a step (not START/END)
+        step_ids = [k for k in steps.keys() if k not in ["0", "END"]]
+        if step_ids:
+            remove_id = random.choice(step_ids)
+            del steps[remove_id]
+            # Remove edges connected to this step
+            edges = [e for e in edges if str(e[0]) != remove_id and str(e[1]) != remove_id]
+    
+    return {
+        "recording_id": f"{recipe_name}_incorrect_{error_type}_{random.randint(1000, 9999)}",
+        "recipe_name": recipe_name,
+        "steps": steps,
+        "edges": edges,
+        "label": 0,  # Incorrect execution
+        "error_type": error_type,
+        "metadata": {
+            "execution_time": random.randint(120, 700),
+            "num_steps": len(steps)
+        }
+    }
+
+
+def generate_mock_dataset(
+    annotations_dir: str,
+    output_dir: str,
+    num_correct_per_recipe: int = 3,
+    num_incorrect_per_recipe: int = 3
+):
+    """
+    Generate mock dataset
+    
+    Args:
+        annotations_dir: Path to annotations/task_graphs/
+        output_dir: Output directory for mock data
+        num_correct_per_recipe: Number of correct samples per recipe
+        num_incorrect_per_recipe: Number of incorrect samples per recipe
+    """
+    annotations_path = Path(annotations_dir)
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+    
+    # Load all task graphs
+    task_graph_files = list(annotations_path.glob("*.json"))
+    print(f"Found {len(task_graph_files)} task graphs")
+    
+    error_types = ["missing_edge", "extra_edge", "wrong_order", "missing_step"]
+    total_samples = 0
+    
+    for json_file in task_graph_files:
+        recipe_name = json_file.stem
+        task_graph = load_standard_task_graph(json_file)
+        
+        # Generate correct samples
+        for i in range(num_correct_per_recipe):
+            correct_graph = create_correct_graph(recipe_name, task_graph)
+            output_file = output_path / f"{recipe_name}_correct_{i}.json"
+            with open(output_file, 'w') as f:
+                json.dump(correct_graph, f, indent=2)
+            total_samples += 1
+        
+        # Generate incorrect samples
+        for i in range(num_incorrect_per_recipe):
+            error_type = random.choice(error_types)
+            incorrect_graph = create_incorrect_graph(recipe_name, task_graph, error_type)
+            output_file = output_path / f"{recipe_name}_incorrect_{error_type}_{i}.json"
+            with open(output_file, 'w') as f:
+                json.dump(incorrect_graph, f, indent=2)
+            total_samples += 1
+    
+    print(f"\n✓ Generated {total_samples} mock samples")
+    print(f"  - {len(task_graph_files) * num_correct_per_recipe} correct samples")
+    print(f"  - {len(task_graph_files) * num_incorrect_per_recipe} incorrect samples")
+    print(f"  - Saved to: {output_path}")
+    
+    # Generate summary statistics
+    stats = {
+        "num_recipes": len(task_graph_files),
+        "num_correct_per_recipe": num_correct_per_recipe,
+        "num_incorrect_per_recipe": num_incorrect_per_recipe,
+        "total_samples": total_samples,
+        "error_types": error_types
+    }
+    
+    stats_file = output_path / "_dataset_stats.json"
+    with open(stats_file, 'w') as f:
+        json.dump(stats, f, indent=2)
+    
+    print(f"✓ Dataset statistics saved to: {stats_file}")
+
+
+if __name__ == "__main__":
+    import argparse
+    
+    parser = argparse.ArgumentParser(description="Generate mock data for task graph classification")
+    parser.add_argument(
+        "--annotations_dir",
+        type=str,
+        default="annotations/task_graphs",
+        help="Path to task graphs directory"
+    )
+    parser.add_argument(
+        "--output_dir",
+        type=str,
+        default="data/observed_graphs",
+        help="Output directory for mock data"
+    )
+    parser.add_argument(
+        "--num_correct",
+        type=int,
+        default=3,
+        help="Number of correct samples per recipe"
+    )
+    parser.add_argument(
+        "--num_incorrect",
+        type=int,
+        default=3,
+        help="Number of incorrect samples per recipe"
+    )
+    
+    args = parser.parse_args()
+    
+    generate_mock_dataset(
+        annotations_dir=args.annotations_dir,
+        output_dir=args.output_dir,
+        num_correct_per_recipe=args.num_correct,
+        num_incorrect_per_recipe=args.num_incorrect
+    )
