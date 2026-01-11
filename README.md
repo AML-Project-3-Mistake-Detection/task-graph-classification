@@ -38,25 +38,43 @@ task-graph-classification/
 
 ```bash
 # Clone the repository with submodules
-git clone --recursive https://github.com/YourUsername/task-graph-classification.git
+git clone --recursive https://github.com/storylei/task-graph-classification.git
 cd task-graph-classification
 
-# Install dependencies
-pip install -r requirements.txt
+# Initialize annotations submodule (if not cloned with --recursive)
+git submodule init
+git submodule update
+
+# Verify annotations (should see 24 recipe JSON files)
+ls annotations/task_graphs/
+
+# Install dependencies - Step 1: Core packages
+pip install torch numpy pandas scipy scikit-learn networkx matplotlib seaborn tensorboard tqdm pyyaml jupyter
+
+# Install dependencies - Step 2: PyTorch Geometric
+pip install torch-geometric
 
 # Create data directories
 mkdir -p data/observed_graphs data/processed results/checkpoints
 ```
 
+**Why two-step installation?** PyTorch Geometric extensions (`torch-scatter`, `torch-sparse`) require compilation and need PyTorch to be installed first. The core `torch-geometric` package is sufficient for this project.
+
 ### For Google Colab
 
 ```python
 # Clone with submodules
-!git clone --recursive https://github.com/YourUsername/task-graph-classification.git
+!git clone --recursive https://github.com/storylei/task-graph-classification.git
 %cd task-graph-classification
 
-# Install dependencies
-!pip install -r requirements.txt
+# Initialize submodule (if needed)
+!git submodule init && git submodule update
+
+# Install dependencies - Step 1: Core packages
+!pip install torch numpy pandas scipy scikit-learn networkx matplotlib seaborn tensorboard tqdm pyyaml jupyter
+
+# Install dependencies - Step 2: PyTorch Geometric
+!pip install torch-geometric
 
 # Mount Google Drive for Substep 3 outputs
 from google.colab import drive

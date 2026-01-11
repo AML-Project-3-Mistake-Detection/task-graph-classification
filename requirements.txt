@@ -1,14 +1,13 @@
-# Core dependencies
+# Core dependencies (install first)
 torch>=2.0.0
 numpy>=1.21.0
 pandas>=1.3.0
 scipy>=1.7.0
 
-# PyTorch Geometric
+# PyTorch Geometric (install after torch)
 torch-geometric>=2.3.0
-torch-scatter>=2.1.0
-torch-sparse>=0.6.0
-torch-cluster>=1.6.0
+# Note: torch-scatter, torch-sparse, torch-cluster require compilation
+# Install them separately if needed: pip install torch-scatter torch-sparse torch-cluster
 
 # Data processing
 scikit-learn>=1.0.0

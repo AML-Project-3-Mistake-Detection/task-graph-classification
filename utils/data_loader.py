@@ -75,10 +75,18 @@ class TaskGraphDataset(Dataset):
         print(f"Found {len(json_files)} JSON files in {self.observed_graphs_dir}")
         
         for json_file in json_files:
+            # Skip metadata/stats files
+            if json_file.name.startswith('_'):
+                continue
+                
             try:
                 with open(json_file, 'r') as f:
                     graph_data = json.load(f)
-                    observed_graphs.append(graph_data)
+                    # Validate required fields
+                    if 'recipe_id' in graph_data and 'observed_steps' in graph_data:
+                        observed_graphs.append(graph_data)
+                    else:
+                        print(f"Warning: Skipping {json_file.name} - missing required fields")
             except Exception as e:
                 print(f"Warning: Failed to load {json_file}: {e}")
                 continue
@@ -171,22 +179,35 @@ class TaskGraphDataset(Dataset):
         Extract edge connectivity from observed graph
         
         Returns:
-            edge_index: [2, num_edges] tensor
+            edge_index: [2, num_edges] tensor with node indices (0 to num_nodes-1)
         """
+        observed_steps = observed_graph.get('observed_steps', [])
+        
+        # Create mapping from step_id to node index
+        step_to_idx = {int(step_id): idx for idx, step_id in enumerate(observed_steps)}
+        
         # Try to get edges from the graph
         edges = observed_graph.get('edges', [])
         
         if not edges:
             # Fallback: Create a simple chain if no edges provided
-            observed_steps = observed_graph.get('observed_steps', [])
             edges = [[i, i+1] for i in range(len(observed_steps)-1)]
-        
-        # Convert to torch tensor [2, num_edges]
-        if edges:
             edge_index = torch.tensor(edges, dtype=torch.long).t().contiguous()
         else:
-            # Empty graph case
-            edge_index = torch.zeros((2, 0), dtype=torch.long)
+            # Remap edges from step_id to node index
+            remapped_edges = []
+            for src, dst in edges:
+                src_int = int(src)
+                dst_int = int(dst)
+                # Only add edge if both nodes exist in observed_steps
+                if src_int in step_to_idx and dst_int in step_to_idx:
+                    remapped_edges.append([step_to_idx[src_int], step_to_idx[dst_int]])
+            
+            if remapped_edges:
+                edge_index = torch.tensor(remapped_edges, dtype=torch.long).t().contiguous()
+            else:
+                # Empty graph case
+                edge_index = torch.zeros((2, 0), dtype=torch.long)
         
         return edge_index
 
