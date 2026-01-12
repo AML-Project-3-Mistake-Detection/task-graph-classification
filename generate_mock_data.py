@@ -6,10 +6,10 @@ import json
 import random
 import os
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Union
 
 
-def load_standard_task_graph(json_path: str) -> Dict:
+def load_standard_task_graph(json_path: Union[str, Path]) -> Dict:
     """Load a standard task graph"""
     with open(json_path, 'r') as f:
         return json.load(f)
@@ -18,8 +18,11 @@ def load_standard_task_graph(json_path: str) -> Dict:
 def create_correct_graph(recipe_name: str, task_graph: Dict) -> Dict:
     """Create a correct observed graph (matches standard)"""
     steps = task_graph["steps"].copy()
-    # Remove START and END for observed_steps
-    observed_steps = [k for k in steps.keys() if k not in ["0", "END"]]
+    # Remove START and END for observed_steps (filter by both key and value)
+    observed_steps = [
+        k for k, v in steps.items() 
+        if k not in ("0", "END") and v not in ("START", "END")
+    ]
     
     # Convert edges to integers
     edges = [[int(src), int(dst)] for src, dst in task_graph["edges"]]
@@ -51,45 +54,62 @@ def create_incorrect_graph(recipe_name: str, task_graph: Dict, error_type: str =
     steps = task_graph["steps"].copy()
     # Convert edges to integers
     edges = [[int(src), int(dst)] for src, dst in task_graph["edges"]]
+    error_applied = False
     
-    if error_type == "missing_edge" and len(edges) > 3:
+    if error_type == "missing_edge" and len(edges) > 1:
         # Remove 1-2 edges (skipped steps)
-        num_remove = random.randint(1, 2)
+        num_remove = min(random.randint(1, 2), len(edges) - 1)
         for _ in range(num_remove):
             if edges:
                 edges.pop(random.randint(0, len(edges) - 1))
+                error_applied = True
     
     elif error_type == "extra_edge":
         # Add 1-2 wrong edges
-        step_ids = [int(k) for k in steps.keys() if k not in ["0", "END"]]
-        num_add = random.randint(1, 2)
-        for _ in range(num_add):
-            if len(step_ids) >= 2:
+        step_ids = [int(k) for k, v in steps.items() if k not in ("0", "END") and v not in ("START", "END")]
+        if len(step_ids) >= 2:
+            num_add = random.randint(1, 2)
+            added = 0
+            max_attempts = 50  # Prevent infinite loop
+            attempts = 0
+            while added < num_add and attempts < max_attempts:
                 src = random.choice(step_ids)
                 dst = random.choice(step_ids)
                 if src != dst and [src, dst] not in edges:
                     edges.append([src, dst])
+                    added += 1
+                    error_applied = True
+                attempts += 1
     
     elif error_type == "wrong_order":
-        # Swap 1-2 edges
-        if len(edges) >= 4:
-            num_swap = random.randint(1, 2)
+        # Reverse 1-2 edges
+        if len(edges) >= 2:
+            num_swap = min(random.randint(1, 2), len(edges))
             for _ in range(num_swap):
                 idx = random.randint(0, len(edges) - 1)
                 edges[idx] = [edges[idx][1], edges[idx][0]]  # Reverse edge
+                error_applied = True
     
     elif error_type == "missing_step":
         # Remove a step (not START/END)
-        step_ids = [k for k in steps.keys() if k not in ["0", "END"]]
+        step_ids = [k for k, v in steps.items() if k not in ("0", "END") and v not in ("START", "END")]
         if step_ids:
             remove_id = random.choice(step_ids)
             del steps[remove_id]
             # Remove edges connected to this step
             remove_id_int = int(remove_id)
             edges = [e for e in edges if e[0] != remove_id_int and e[1] != remove_id_int]
+            error_applied = True
     
-    # Remove START and END for observed_steps
-    observed_steps = [k for k in steps.keys() if k not in ["0", "END"]]
+    # Remove START and END for observed_steps (filter by both key and value)
+    observed_steps = [
+        k for k, v in steps.items() 
+        if k not in ("0", "END") and v not in ("START", "END")
+    ]
+    
+    # Warn if error could not be applied
+    if not error_applied:
+        print(f"⚠️  Warning: Could not apply error_type='{error_type}' to {recipe_name} (graph too small). Treating as label noise.")
     
     return {
         "recording_id": f"{recipe_name}_incorrect_{error_type}_{random.randint(1000, 9999)}",
@@ -99,6 +119,7 @@ def create_incorrect_graph(recipe_name: str, task_graph: Dict, error_type: str =
         "observed_steps": observed_steps,
         "label": 0,  # Incorrect execution
         "error_type": error_type,
+        "error_applied": error_applied,  # Track whether error was successfully applied
         "metadata": {
             "execution_time": random.randint(120, 700),
             "num_steps": len(observed_steps)
