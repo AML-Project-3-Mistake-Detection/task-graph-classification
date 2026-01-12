@@ -19,22 +19,34 @@ class TaskGraphDataset(Dataset):
     Loads:
     1. Standard task graphs from annotations/task_graphs/
     2. Observed graphs from Substep 3 outputs
+    3. Video embeddings from Extension3 outputs (hiero_step_embeddings_256.npz)
     """
     
     def __init__(self, 
                  task_graphs_dir: str,
                  observed_graphs_dir: str,
+                 extension3_dir: str = None,
+                 use_hiero_embeddings: bool = True,
                  transform=None,
                  pre_transform=None):
         """
         Args:
             task_graphs_dir: Path to standard task graphs (from annotations/)
             observed_graphs_dir: Path to observed graphs (from Substep 3)
+            extension3_dir: Path to Extension3 outputs (for hiero embeddings)
+            use_hiero_embeddings: Whether to use 256D hiero embeddings vs one-hot
             transform: Optional transform to apply to data
             pre_transform: Optional pre-transform
         """
+
         self.task_graphs_dir = Path(task_graphs_dir).resolve()
         self.observed_graphs_dir = Path(observed_graphs_dir).resolve()
+        self.use_hiero_embeddings = use_hiero_embeddings
+        
+        # Load hiero embeddings if available
+        self.hiero_embeddings = None
+        if use_hiero_embeddings and extension3_dir:
+            self._load_hiero_embeddings(extension3_dir)
         
         # Load standard task graphs
         self.standard_graphs = self._load_standard_task_graphs()
@@ -44,12 +56,39 @@ class TaskGraphDataset(Dataset):
             len(graph.get('steps', {})) 
             for graph in self.standard_graphs.values()
         ) if self.standard_graphs else 20
-        print(f"Max steps across all recipes: {self.max_steps}")
+        
+        if self.hiero_embeddings is not None:
+            print(f"Using 256D hiero embeddings from Extension3")
+        else:
+            print(f"Using one-hot encoding with max_steps={self.max_steps}")
         
         # Load Substep 3 outputs
         self.observed_graphs = self._load_substep3_outputs()
         
         super().__init__(None, transform, pre_transform)
+    
+    def _load_hiero_embeddings(self, extension3_dir: str):
+        """Load hiero_step_embeddings_256.npz from Extension3"""
+        extension3_path = Path(extension3_dir).resolve()
+        hiero_path = extension3_path / "visual_features" / "hiero_step_embeddings_256.npz"
+        
+        if hiero_path.exists():
+            try:
+                hiero_data = np.load(hiero_path, allow_pickle=True)
+                self.hiero_embeddings = {
+                    'step_embeddings': hiero_data['step_embeddings'],  # (384, 61, 256)
+                    'step_mask': hiero_data['step_mask'],              # (384, 61) bool
+                    'labels': hiero_data['labels'],                    # (384,)
+                    'video_ids': hiero_data['video_ids']               # (384,) str
+                }
+                print(f"✓ Loaded hiero embeddings from {hiero_path}")
+                print(f"  Total videos: {len(self.hiero_embeddings['labels'])}")
+                print(f"  Embedding shape per video: {self.hiero_embeddings['step_embeddings'].shape}")
+            except Exception as e:
+                print(f"Warning: Failed to load hiero embeddings: {e}")
+                self.hiero_embeddings = None
+        else:
+            print(f"Warning: hiero_step_embeddings_256.npz not found at {hiero_path}")
     
     def _load_standard_task_graphs(self) -> Dict[str, Dict]:
         """Load all standard task graphs from annotations"""
@@ -144,32 +183,62 @@ class TaskGraphDataset(Dataset):
         """
         Extract node features for the observed graph
         
-        Options:
-        1. One-hot encoding of step IDs (using global max_steps)
-        2. Pre-computed text embeddings (from Substep 3)
-        3. Learnable embeddings
+        Three options:
+        1. Use hiero 256D embeddings from Extension3 (recommended)
+        2. Pre-computed text embeddings (from observed_graph)
+        3. One-hot encoding of step IDs (fallback)
         """
         observed_steps = observed_graph.get('observed_steps', [])
         num_nodes = len(observed_steps)
         
-        # Option 1: Check if embeddings are provided
+        if num_nodes == 0:
+            # Empty graph - return dummy feature
+            feature_dim = 256 if self.hiero_embeddings else self.max_steps
+            return torch.zeros((1, feature_dim), dtype=torch.float)
+        
+        # Option 1: Use hiero 256D embeddings (if available)
+        if self.hiero_embeddings is not None:
+            video_id_str = observed_graph.get('video_id', None)
+            if video_id_str is not None:
+                try:
+                    video_id = int(video_id_str)
+                    # Get embeddings for this video
+                    video_embeddings = self.hiero_embeddings['step_embeddings'][video_id]  # (61, 256)
+                    step_mask = self.hiero_embeddings['step_mask'][video_id]                # (61,) bool
+                    
+                    # Extract features for observed steps
+                    features = []
+                    for step_idx in observed_steps:
+                        step_idx_int = int(step_idx) if isinstance(step_idx, str) else step_idx
+                        if step_idx_int < len(video_embeddings) and step_mask[step_idx_int]:
+                            features.append(video_embeddings[step_idx_int])
+                        else:
+                            # Fallback: use zero vector
+                            features.append(np.zeros(256))
+                    
+                    if features:
+                        return torch.tensor(np.array(features), dtype=torch.float)
+                except Exception as e:
+                    print(f"Warning: Failed to extract hiero embeddings: {e}")
+        
+        # Option 2: Check if embeddings are provided in observed_graph
         if 'step_embeddings' in observed_graph:
             embeddings = observed_graph['step_embeddings']
             features = []
             for step_id in observed_steps:
-                features.append(embeddings[str(step_id)])
-            return torch.tensor(features, dtype=torch.float)
+                if str(step_id) in embeddings:
+                    features.append(embeddings[str(step_id)])
+            if features:
+                return torch.tensor(features, dtype=torch.float)
         
-        # Option 2: One-hot encoding using global max_steps for consistency
+        # Option 3: One-hot encoding using global max_steps for consistency (fallback)
         features = torch.zeros((num_nodes, self.max_steps), dtype=torch.float)
         for i, step_id in enumerate(observed_steps):
-            # Convert step_id to int if it's a string
             try:
                 step_idx = int(step_id)
                 if step_idx < self.max_steps:
                     features[i, step_idx] = 1.0
             except (ValueError, TypeError):
-                # If conversion fails, skip this step
                 continue
         
         return features

@@ -91,18 +91,24 @@ def main(args):
     # Handle paths - ensure they're absolute
     observed_graphs_dir = Path(config.OBSERVED_GRAPHS_DIR).resolve()
     annotations_dir = Path(config.ANNOTATIONS_DIR).resolve()
+    extension3_dir = Path(config.EXTENSION3_DIR).resolve() if config.EXTENSION3_DIR else None
     
     print(f"\nData paths:")
     print(f"  Annotations: {annotations_dir}")
     print(f"  Observed graphs: {observed_graphs_dir}")
+    print(f"  Extension3: {extension3_dir if extension3_dir else 'Not provided'}")
     print(f"  Annotations exists: {annotations_dir.exists()}")
     print(f"  Observed graphs exists: {observed_graphs_dir.exists()}")
+    if extension3_dir:
+        print(f"  Extension3 exists: {extension3_dir.exists()}")
     
     # Create dataset
     print("\nLoading dataset...")
     dataset = TaskGraphDataset(
         task_graphs_dir=str(annotations_dir),
-        observed_graphs_dir=str(observed_graphs_dir)
+        observed_graphs_dir=str(observed_graphs_dir),
+        extension3_dir=str(extension3_dir) if extension3_dir else None,
+        use_hiero_embeddings=config.USE_EXTENSION3_EMBEDDINGS
     )
     
     print(f"Dataset size: {len(dataset)}")

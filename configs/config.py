@@ -24,11 +24,14 @@ class Config:
     RESULTS_DIR = PROJECT_ROOT / "results"
     
     # Data paths - RENAMED for clarity
-    OBSERVED_GRAPHS_DIR = DATA_DIR / "observed_graphs"  # From Substep 3
-    PROCESSED_DATA_DIR = DATA_DIR / "processed"         # Preprocessed PyG data
+    OBSERVED_GRAPHS_DIR = DATA_DIR / "observed_graphs"  # Observation graphs with Extension3 data
+    EXTENSION3_DIR = DATA_DIR / "extension3_outputs"    # Extension3 data (for hiero embeddings)
     
     # Google Drive path (for Colab) - can be overridden
     DRIVE_OBSERVED_GRAPHS_DIR = "/content/drive/MyDrive/AML_Project/substep3_outputs"
+    
+    # Extension3 settings
+    USE_EXTENSION3_EMBEDDINGS = True  # Use 256D hiero embeddings vs one-hot
     
     # Model settings
     MODEL_TYPE = "dagnn"  # Options: dagnn, gcn, graphsage
