@@ -36,8 +36,7 @@ wheels/
 data/observed_graphs/*
 !data/observed_graphs/.gitkeep
 
-data/processed/*
-!data/processed/.gitkeep
+data/
 
 results/*
 !results/checkpoints/
