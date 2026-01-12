@@ -1,3 +1,57 @@
+# AI Coding Instructions for Task Graph Classification
+
+## Project Overview
+This document provides guidance for AI coding agents working on the Task Graph Classification project, which implements a Graph Neural Network (GNN) classifier to verify recipe execution correctness by analyzing observed task-graph structures.
+
+## Architecture Pattern
+**Core Components**:
+- **Data Loading**: Handled in `utils/data_loader.py`, which loads both standard and observed graphs, extracts node features, and converts them to PyTorch Geometric `Data` objects.
+- **Model Implementations**: Found in `models/dagnn.py`, including `DAGNN` and `GCNClassifier` with global pooling and MLP classifier.
+- **Configuration Management**: Centralized in `configs/config.py`, where all paths, hyperparameters, and settings are defined.
+- **Training and Evaluation**: Managed in `train.py` and `evaluate.py`, respectively.
+
+**Data Flow**:
+1. Standard recipe graphs from `annotations/`
+2. Observed execution graphs from `data/observed_graphs/`
+3. Processed into PyG Dataset
+4. Input to GNN models for binary classification (correct/incorrect execution)
+
+## Developer Workflows
+**Installation**:
+1. Clone the repository with submodules:
+   ```bash
+   git clone --recursive https://github.com/storylei/task-graph-classification.git
+   cd task-graph-classification
+   ```
+2. Install dependencies:
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+**Training**:
+```bash
+python train.py --config configs/dagnn_config.yaml
+```
+
+**Evaluation**:
+```bash
+python evaluate.py --checkpoint results/checkpoints/best_model.pt
+```
+
+## Project-Specific Conventions
+- **Data Format**: Observed graphs must follow the specified JSON structure, including `recipe_id`, `video_id`, `observed_steps`, `matched_edges`, and `label`.
+- **Model Selection**: Use the factory pattern in `train.py` to switch between model types based on `config.MODEL_TYPE`.
+
+## Integration Points
+- **Annotations**: Ensure the `annotations/` directory is updated with the latest task graphs from the CaptainCook4D project.
+- **Substep 3 Outputs**: The project expects JSON files in `data/observed_graphs/` with the correct schema.
+
+## Key Gotchas
+- If the dataset size is 0, verify that the paths exist and that the `observed_graphs/` directory contains JSON files.
+- Ensure that the annotations submodule is initialized and updated correctly.
+
+## Contact
+For further assistance, please reach out to the project maintainers.
 # Task Graph Classification - AI Coding Instructions
 
 ## Project Overview

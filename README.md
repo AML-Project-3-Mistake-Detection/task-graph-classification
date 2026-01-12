@@ -54,8 +54,6 @@ pip install torch numpy pandas scipy scikit-learn networkx matplotlib seaborn te
 # Install dependencies - Step 2: PyTorch Geometric
 pip install torch-geometric
 
-# Create data directories
-mkdir -p data/observed_graphs data/processed results/checkpoints
 ```
 
 **Why two-step installation?** PyTorch Geometric extensions (`torch-scatter`, `torch-sparse`) require compilation and need PyTorch to be installed first. The core `torch-geometric` package is sufficient for this project.
