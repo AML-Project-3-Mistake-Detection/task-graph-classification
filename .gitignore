@@ -32,11 +32,9 @@ wheels/
 .ipynb_checkpoints
 *.ipynb
 
-# Data
-data/observed_graphs/*
-!data/observed_graphs/.gitkeep
-
-data/
+# Data - ignore all except processed_graphs.pt
+data/*
+!data/processed_graphs.pt
 
 results/*
 !results/checkpoints/
@@ -44,7 +42,6 @@ results/checkpoints/*
 !results/checkpoints/.gitkeep  
 
 # IDE
-.vscode/
 .idea/
 *.swp
 *.swo

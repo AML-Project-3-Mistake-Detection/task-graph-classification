@@ -1,0 +1,107 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Extract Graphs (CPU)",
+            "type": "python",
+            "request": "launch",
+            "program": "${workspaceFolder}/extract_graphs.py",
+            "console": "integratedTerminal",
+            "justMyCode": true,
+            "args": [
+                "--device",
+                "cpu",
+                "--output",
+                "data/processed_graphs.pt"
+            ],
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "PYTHONUNBUFFERED": "1"
+            }
+        },
+        {
+            "name": "Extract Graphs (CUDA)",
+            "type": "python",
+            "request": "launch",
+            "program": "${workspaceFolder}/extract_graphs.py",
+            "console": "integratedTerminal",
+            "justMyCode": true,
+            "args": [
+                "--device",
+                "cuda",
+                "--output",
+                "data/processed_graphs.pt"
+            ],
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "PYTHONUNBUFFERED": "1"
+            }
+        },
+        {
+            "name": "Extract Graphs (Custom Paths)",
+            "type": "python",
+            "request": "launch",
+            "program": "${workspaceFolder}/extract_graphs.py",
+            "console": "integratedTerminal",
+            "justMyCode": true,
+            "args": [
+                "--hiero_embeddings",
+                "data/extension3_outputs/visual_features/hiero_step_embeddings_256.npz",
+                "--visual_mapping",
+                "data/extension3_outputs/visual_features/visual_features_mapping.json",
+                "--task_embeddings",
+                "data/extension3_outputs/task_graph_encodings/task_graph_embeddings.npz",
+                "--metadata",
+                "data/extension3_outputs/task_graph_encodings/task_graph_metadata.json",
+                "--fusion_checkpoint",
+                "data/extension3_outputs/fusion_model/best_fusion_model.pth",
+                "--device",
+                "cpu",
+                "--output",
+                "data/processed_graphs_debug.pt"
+            ],
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "PYTHONUNBUFFERED": "1"
+            }
+        },
+        {
+            "name": "Train Model (Best Config)",
+            "type": "python",
+            "request": "launch",
+            "program": "${workspaceFolder}/train.py",
+            "console": "integratedTerminal",
+            "justMyCode": true,
+            "args": [
+                "--model_type",
+                "dagnn",
+                "--hidden_dim",
+                "128",
+                "--num_layers",
+                "2",
+                "--lr",
+                "0.001",
+                "--dropout",
+                "0.3",
+                "--num_epochs",
+                "100",
+                "--batch_size",
+                "8",
+                "--device",
+                "cpu"
+            ],
+            "cwd": "${workspaceFolder}",
+            "env": {
+                "PYTHONUNBUFFERED": "1"
+            }
+        },
+        {
+            "name": "Python: Current File",
+            "type": "python",
+            "request": "launch",
+            "program": "${file}",
+            "console": "integratedTerminal",
+            "justMyCode": true
+        }
+    ]
+}
