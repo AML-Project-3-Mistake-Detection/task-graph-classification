@@ -14,6 +14,8 @@ from tqdm import tqdm
 import numpy as np
 import time
 import csv
+import json
+from datetime import datetime
 
 # Import sklearn metrics
 from sklearn.metrics import f1_score, roc_auc_score, precision_score, recall_score
@@ -22,7 +24,99 @@ from models.dagnn import DAGNN, GCNClassifier
 
 
 # ============================================================================
-# 1. Dataset
+# 1. Helper Functions
+# ============================================================================
+def create_model(model_type, in_channels, hidden_channels, num_layers, dropout, device):
+    """Create model based on configuration."""
+    if model_type == 'dagnn':
+        model = DAGNN(
+            in_channels=in_channels,
+            hidden_channels=hidden_channels,
+            num_layers=num_layers,
+            num_classes=2,
+            dropout=dropout
+        )
+    elif model_type == 'gcn':
+        model = GCNClassifier(
+            in_channels=in_channels,
+            hidden_channels=hidden_channels,
+            num_layers=num_layers,
+            num_classes=2,
+            dropout=dropout
+        )
+    else:
+        raise ValueError(f"Unknown model type: {model_type}")
+    
+    return model.to(device)
+
+
+def compute_class_weights(labels):
+    """
+    Compute class weights to handle imbalanced datasets.
+    Classes with fewer samples get higher weights.
+    """
+    unique, counts = np.unique(labels, return_counts=True)
+    total = len(labels)
+    weights = {}
+    for cls, count in zip(unique, counts):
+        # Weight = inverse of class frequency
+        weights[cls] = total / (len(unique) * count)
+    
+    # Convert to tensor in proper format for PyTorch
+    class_weights = torch.tensor([weights.get(i, 1.0) for i in range(len(unique))], 
+                                 dtype=torch.float32)
+    return class_weights
+
+
+def find_best_threshold(y_true, y_probs, metric='f1'):
+    """
+    Find best classification threshold by sweeping on validation set.
+    
+    Args:
+        y_true: True labels
+        y_probs: Predicted probabilities for class 1
+        metric: 'f1' (recommended), 'accuracy', or 'precision'
+    
+    Returns:
+        best_threshold, best_metric_value
+    """
+    thresholds = np.arange(0.1, 1.0, 0.05)
+    best_threshold = 0.5
+    best_value = 0.0
+    
+    for threshold in thresholds:
+        y_pred = (y_probs >= threshold).astype(int)
+        
+        if metric == 'f1':
+            value = f1_score(y_true, y_pred, average='macro', zero_division=0)
+        elif metric == 'accuracy':
+            value = np.mean(y_pred == y_true)
+        elif metric == 'precision':
+            value = precision_score(y_true, y_pred, average='macro', zero_division=0)
+        else:
+            raise ValueError(f"Unknown metric: {metric}")
+        
+        if value > best_value:
+            best_value = value
+            best_threshold = threshold
+    
+    return best_threshold, best_value
+
+
+def save_checkpoint(model, checkpoint_path, **metadata):
+    """Save model checkpoint with metadata."""
+    checkpoint_dir = checkpoint_path.parent
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    
+    checkpoint = {
+        'model_state_dict': model.state_dict(),
+        **metadata
+    }
+    torch.save(checkpoint, checkpoint_path)
+
+
+# ============================================================================
+# 2. Dataset
 # ============================================================================
 class PreloadedGraphDataset(Dataset):
     """
@@ -42,12 +136,16 @@ class PreloadedGraphDataset(Dataset):
 # ============================================================================
 # 2. evaluate and train functions
 # ============================================================================
-def train_epoch(model, loader, optimizer, device):
-    """Train for one epoch"""
+def train_epoch(model, loader, optimizer, device, class_weights=None):
+    """Train for one epoch with optional class weights"""
     model.train()
     total_loss = 0
     correct = 0
     total = 0
+    
+    # Move class weights to device if provided
+    if class_weights is not None:
+        class_weights = class_weights.to(device)
     
     for batch in tqdm(loader, desc="Training", leave=False):
         batch = batch.to(device)
@@ -58,7 +156,12 @@ def train_epoch(model, loader, optimizer, device):
         
         # Handle both float and long labels
         y = batch.y.long().view(-1) if batch.y.dtype == torch.float32 else batch.y
-        loss = F.cross_entropy(out, y)
+        
+        # Cross entropy with class weights
+        if class_weights is not None:
+            loss = F.cross_entropy(out, y, weight=class_weights)
+        else:
+            loss = F.cross_entropy(out, y)
         
         # Backward pass
         loss.backward()
@@ -77,15 +180,20 @@ def train_epoch(model, loader, optimizer, device):
 
 
 @torch.no_grad()
-def evaluate(model, loader, device):
-    """Evaluate model with full metrics (Acc, F1, AUC, Precision, Recall)"""
+def evaluate(model, loader, device, threshold=None):
+    """
+    Evaluate model with full metrics (Acc, F1, AUC, Precision, Recall)
+    
+    Args:
+        threshold: If provided, use this threshold instead of 0.5 for binary classification
+    """
     model.eval()
     total_loss = 0
     
     # Containers: store all predictions and labels for computing sklearn metrics
     all_preds = []
     all_labels = []
-    all_probs = [] # for AUC
+    all_probs = [] # for AUC and threshold tuning
     
     for batch in loader:
         batch = batch.to(device)
@@ -97,7 +205,12 @@ def evaluate(model, loader, device):
         
         # Get probabilities (Class 1) and predicted classes
         probs = torch.softmax(out, dim=1)[:, 1]
-        preds = out.argmax(dim=1)
+        
+        # Use custom threshold if provided, else default to 0.5
+        if threshold is not None:
+            preds = (probs >= threshold).long()
+        else:
+            preds = out.argmax(dim=1)
         
         # Collect data (convert to numpy)
         all_probs.extend(probs.cpu().numpy())
@@ -118,19 +231,179 @@ def evaluate(model, loader, device):
     except ValueError:
         auc = 0.5 # If validation set has only one class, AUC cannot be computed
         
-    return avg_loss, accuracy, f1, auc, precision, recall
+    return avg_loss, accuracy, f1, auc, precision, recall, np.array(all_probs), np.array(all_labels)
 
 
 # ============================================================================
-# 3. Main function - Supports two evaluation modes
+# 4. Training Functions
 # ============================================================================
-def train_and_evaluate_loo(args, device):
+def train_standard(args, device):
     """
-    Leave-One-Recipe-Out Cross-Validation
-    Each time, use all samples from one recipe as the test set, train on the rest
+    Standard train/val split (80/20) training with:
+    - Class weights for imbalanced data
+    - Best-by-F1 checkpoint saving
+    - Threshold tuning on validation set
     """
     print("\n" + "="*70)
-    print("Leave-One-Recipe-Out Cross-Validation")
+    print("Standard Training (80/20 split) with Improvements")
+    print("  - Class Weights: YES (handles imbalanced data)")
+    print("  - Best-by-F1: YES (saves best F1 model)")
+    print("  - Threshold Tuning: YES (optimizes on validation set)")
+    print("="*70)
+    
+    # Load data
+    print(f"\nLoading data from {args.data_path}...")
+    dataset = PreloadedGraphDataset(args.data_path, weights_only=False)
+    
+    sample = dataset[0]
+    print(f"Dataset size: {len(dataset)}")
+    print(f"Input channels: {sample.x.shape[1]}")
+    
+    # Split dataset
+    train_size = int(0.8 * len(dataset))
+    val_size = len(dataset) - train_size
+    train_dataset, val_dataset = torch.utils.data.random_split(
+        dataset, [train_size, val_size],
+        generator=torch.Generator().manual_seed(args.seed)
+    )
+    
+    print(f"Train size: {train_size} | Val size: {val_size}")
+    
+    # Create data loaders
+    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True)
+    val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False)
+    
+    # Compute class weights for training set
+    train_indices = train_dataset.indices
+    train_labels = np.array([dataset[i].y.item() for i in train_indices])
+    class_weights = compute_class_weights(train_labels)
+    class_weights = class_weights.to(device)
+    print(f"\n✓ Class Weights: {class_weights.tolist()}")
+    
+    # Create model
+    in_channels = sample.x.shape[1]
+    print(f"\nCreating {args.model_type.upper()} model...")
+    model = create_model(args.model_type, in_channels, args.hidden_dim, 
+                        args.num_layers, args.dropout, device)
+    print(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}")
+    
+    # Optimizer
+    optimizer = torch.optim.Adam(
+        model.parameters(),
+        lr=args.lr,
+        weight_decay=args.weight_decay
+    )
+    
+    # Training loop
+    print("\nStarting training...")
+    best_val_f1 = 0  # Now tracking best F1 instead of best Acc
+    best_val_acc = 0
+    best_val_auc = 0
+    best_threshold = 0.5  # Store best threshold
+    patience_counter = 0
+    
+    for epoch in range(1, args.num_epochs + 1):
+        train_loss, train_acc = train_epoch(model, train_loader, optimizer, device, class_weights=class_weights)
+        
+        # Evaluate on validation set with default threshold
+        val_loss, val_acc, val_f1, val_auc, val_prec, val_rec, val_probs, val_labels = evaluate(
+            model, val_loader, device, threshold=None
+        )
+        
+        print(f"Epoch {epoch:03d}: "
+              f"Train Loss: {train_loss:.4f}, Acc: {train_acc:.4f} | "
+              f"Val Loss: {val_loss:.4f}, Acc: {val_acc:.4f}, F1: {val_f1:.4f}, AUC: {val_auc:.4f}")
+        
+        # IMPROVEMENT 1 & 2: Save best model based on F1 (not Acc)
+        # Also tune threshold on validation set
+        if val_f1 > best_val_f1:
+            best_val_f1 = val_f1
+            best_val_acc = val_acc
+            best_val_auc = val_auc
+            patience_counter = 0
+            
+            # IMPROVEMENT 3: Find best threshold on validation set
+            threshold, threshold_f1 = find_best_threshold(val_labels, val_probs, metric='f1')
+            best_threshold = threshold
+            
+            print(f"  ✓ New best F1! Threshold: {best_threshold:.3f} (tuned F1: {threshold_f1:.4f})")
+            
+            save_checkpoint(
+                model,
+                Path("results/checkpoints/best_model.pt"),
+                epoch=epoch,
+                optimizer_state_dict=optimizer.state_dict(),
+                val_acc=val_acc,
+                val_f1=val_f1,
+                val_auc=val_auc,
+                best_threshold=best_threshold,  # Save optimal threshold
+                model_config={
+                    'model_type': args.model_type,
+                    'in_channels': in_channels,
+                    'hidden_channels': args.hidden_dim,
+                    'num_layers': args.num_layers,
+                    'num_classes': 2,
+                    'dropout': args.dropout
+                },
+                args=vars(args)
+            )
+        else:
+            patience_counter += 1
+            if patience_counter >= args.patience:
+                print(f"Early stopping after {epoch} epochs")
+                break
+    
+    print("\n" + "="*70)
+    print(f"Training completed!")
+    print(f"  Best Val F1: {best_val_f1:.4f} (Acc: {best_val_acc:.4f}, AUC: {best_val_auc:.4f})")
+    print(f"  Best Threshold: {best_threshold:.3f}")
+    print("="*70)
+
+    # Save experiment log to CSV
+    results_dir = Path("results")
+    results_dir.mkdir(parents=True, exist_ok=True)
+    log_file = results_dir / "experiment_results.csv"
+    file_exists = log_file.exists()
+    
+    with open(log_file, mode='a', newline='') as f:
+        writer = csv.writer(f)
+        if not file_exists:
+            writer.writerow([
+                "Timestamp", "Model", "Dim", "Layers", "LR", "Drop", "Batch", 
+                "Best_F1", "Best_Acc", "Best_AUC", "Best_Threshold", "Total_Epochs"
+            ])
+        
+        writer.writerow([
+            time.strftime("%Y-%m-%d %H:%M"),
+            args.model_type,
+            args.hidden_dim,
+            args.num_layers,
+            args.lr,
+            args.dropout,
+            args.batch_size,
+            f"{best_val_f1:.4f}",
+            f"{best_val_acc:.4f}",
+            f"{best_val_auc:.4f}",
+            f"{best_threshold:.3f}",
+            epoch
+        ])
+    
+    print(f"Experiment results saved to {log_file}")
+    return best_val_f1, best_val_acc, best_val_auc
+
+
+def train_and_evaluate_loo(args, device):
+    """
+    Leave-One-Recipe-Out Cross-Validation with improvements:
+    - Class weights for imbalanced data
+    - Best-by-F1 checkpoint saving
+    - Threshold tuning on training set
+    """
+    print("\n" + "="*70)
+    print("Leave-One-Recipe-Out Cross-Validation (with improvements)")
+    print("  - Class Weights: YES")
+    print("  - Best-by-F1: YES")
+    print("  - Threshold Tuning: YES")
     print("="*70)
     
     # Load data
@@ -173,25 +446,15 @@ def train_and_evaluate_loo(args, device):
         train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True)
         test_loader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False)
         
+        # Compute class weights on training set
+        train_labels = np.array([dataset[i].y.item() for i in train_indices])
+        class_weights = compute_class_weights(train_labels)
+        class_weights = class_weights.to(device)
+        
         # Create model
         in_channels = dataset[0].x.shape[1]
-        if args.model_type == 'dagnn':
-            model = DAGNN(
-                in_channels=in_channels,
-                hidden_channels=args.hidden_dim,
-                num_layers=args.num_layers,
-                num_classes=2,
-                dropout=args.dropout
-            )
-        else:
-            model = GCNClassifier(
-                in_channels=in_channels,
-                hidden_channels=args.hidden_dim,
-                num_layers=args.num_layers,
-                num_classes=2,
-                dropout=args.dropout
-            )
-        model = model.to(device)
+        model = create_model(args.model_type, in_channels, args.hidden_dim,
+                           args.num_layers, args.dropout, device)
         
         # Optimizer
         optimizer = torch.optim.Adam(
@@ -200,29 +463,66 @@ def train_and_evaluate_loo(args, device):
             weight_decay=args.weight_decay
         )
         
-        # Training loop
-        best_train_acc = 0
+        # Training loop with Best-by-F1
+        best_train_f1 = 0  # Now tracking best F1
+        best_threshold = 0.5
         patience_counter = 0
         
+        # Store predictions for threshold tuning
+        best_probs = None
+        best_labels = None
+        
         for epoch in range(1, args.num_epochs + 1):
-            train_loss, train_acc = train_epoch(model, train_loader, optimizer, device)
+            train_loss, train_acc = train_epoch(model, train_loader, optimizer, device, class_weights=class_weights)
             
-            if train_acc > best_train_acc:
-                best_train_acc = train_acc
+            # Evaluate on training set to find best threshold
+            train_eval_loss, train_eval_acc, train_eval_f1, train_eval_auc, _, _, train_probs, train_labels_np = evaluate(
+                model, train_loader, device, threshold=None
+            )
+            
+            if train_eval_f1 > best_train_f1:
+                best_train_f1 = train_eval_f1
+                best_probs = train_probs
+                best_labels = train_labels_np
                 patience_counter = 0
+                
+                # Find best threshold on training set
+                threshold, threshold_f1 = find_best_threshold(train_labels_np, train_probs, metric='f1')
+                best_threshold = threshold
             else:
                 patience_counter += 1
                 if patience_counter >= args.patience:
-                    print(f"  Early stopping at epoch {epoch}")
                     break
             
             if epoch % 10 == 0 or epoch == 1:
-                print(f"  Epoch {epoch:03d}: Train Loss={train_loss:.4f}, Acc={train_acc:.4f}")
+                print(f"  Epoch {epoch:03d}: Train Loss={train_loss:.4f}, Acc={train_acc:.4f}, F1={train_eval_f1:.4f}")
         
-        # Evaluate on test set
-        test_loss, test_acc, test_f1, test_auc, test_prec, test_rec = evaluate(model, test_loader, device)
+        # Evaluate on test set using tuned threshold
+        test_loss, test_acc, test_f1, test_auc, test_prec, test_rec, test_probs, test_labels_np = evaluate(
+            model, test_loader, device, threshold=best_threshold
+        )
         
-        print(f"\n  Test Results for {test_recipe}:")
+        # Save checkpoint for this recipe
+        checkpoint_path = Path("results") / "checkpoints" / "loo" / f"{test_recipe}_best.pt"
+        save_checkpoint(
+            model,
+            checkpoint_path,
+            test_recipe=test_recipe,
+            test_acc=test_acc,
+            test_f1=test_f1,
+            test_auc=test_auc,
+            best_threshold=best_threshold,
+            model_config={
+                'model_type': args.model_type,
+                'in_channels': in_channels,
+                'hidden_channels': args.hidden_dim,
+                'num_layers': args.num_layers,
+                'num_classes': 2,
+                'dropout': args.dropout
+            }
+        )
+        
+        print(f"\n  Test Results for {test_recipe} (Threshold: {best_threshold:.3f}):")
         print(f"    Acc={test_acc:.4f}, F1={test_f1:.4f}, AUC={test_auc:.4f}")
         print(f"    Precision={test_prec:.4f}, Recall={test_rec:.4f}")
         
@@ -232,7 +532,8 @@ def train_and_evaluate_loo(args, device):
             'f1': test_f1,
             'auc': test_auc,
             'precision': test_prec,
-            'recall': test_rec
+            'recall': test_rec,
+            'threshold': best_threshold
         })
     
     # Summarize results
@@ -240,7 +541,7 @@ def train_and_evaluate_loo(args, device):
     print("Per-Recipe Results Summary")
     print("="*70)
     for result in recipe_results:
-        print(f"{result['recipe']:25s}: Acc={result['accuracy']:.4f}, F1={result['f1']:.4f}, AUC={result['auc']:.4f}")
+        print(f"{result['recipe']:25s}: Acc={result['accuracy']:.4f}, F1={result['f1']:.4f}, AUC={result['auc']:.4f}, Threshold={result['threshold']:.3f}")
     
     # Calculate average performance
     avg_acc = np.mean([r['accuracy'] for r in recipe_results])
@@ -248,6 +549,7 @@ def train_and_evaluate_loo(args, device):
     avg_auc = np.mean([r['auc'] for r in recipe_results])
     avg_prec = np.mean([r['precision'] for r in recipe_results])
     avg_rec = np.mean([r['recall'] for r in recipe_results])
+    avg_threshold = np.mean([r['threshold'] for r in recipe_results])
     
     print("\n" + "="*70)
     print("Average Performance Across All Recipes")
@@ -257,6 +559,7 @@ def train_and_evaluate_loo(args, device):
     print(f"AUC:       {avg_auc:.4f} ± {np.std([r['auc'] for r in recipe_results]):.4f}")
     print(f"Precision: {avg_prec:.4f} ± {np.std([r['precision'] for r in recipe_results]):.4f}")
     print(f"Recall:    {avg_rec:.4f} ± {np.std([r['recall'] for r in recipe_results]):.4f}")
+    print(f"Avg Threshold: {avg_threshold:.3f}")
     
     # Save results to CSV
     results_dir = Path("results")
@@ -265,7 +568,7 @@ def train_and_evaluate_loo(args, device):
     
     with open(log_file, mode='w', newline='') as f:
         writer = csv.writer(f)
-        writer.writerow(["Recipe", "Accuracy", "F1", "AUC", "Precision", "Recall"])
+        writer.writerow(["Recipe", "Accuracy", "F1", "AUC", "Precision", "Recall", "Threshold"])
         for result in recipe_results:
             writer.writerow([
                 result['recipe'],
@@ -273,21 +576,48 @@ def train_and_evaluate_loo(args, device):
                 f"{result['f1']:.4f}",
                 f"{result['auc']:.4f}",
                 f"{result['precision']:.4f}",
-                f"{result['recall']:.4f}"
+                f"{result['recall']:.4f}",
+                f"{result['threshold']:.3f}"
             ])
         writer.writerow(["Average", f"{avg_acc:.4f}", f"{avg_f1:.4f}", f"{avg_auc:.4f}", 
-                        f"{avg_prec:.4f}", f"{avg_rec:.4f}"])
+                        f"{avg_prec:.4f}", f"{avg_rec:.4f}", f"{avg_threshold:.3f}"])
     
     print(f"\nPer-recipe results saved to {log_file}")
+    
+    # 🔑 Flush to disk to ensure complete write
+    import os
+    try:
+        with open(log_file, 'r') as f:
+            os.fsync(f.fileno())
+    except Exception as e:
+        print(f"⚠️  Warning: fsync failed: {e}")
+    
+    # Create completion marker with verification info
+    done_marker = results_dir / "loo_results.done"
+    num_recipes = len(recipe_results)
+    verification_data = {
+        "num_recipes": num_recipes,
+        "avg_f1": f"{avg_f1:.6f}",
+        "avg_auc": f"{avg_auc:.6f}",
+        "timestamp": str(datetime.now()),
+        "csv_file": str(log_file)
+    }
+    with open(done_marker, 'w') as f:
+        json.dump(verification_data, f)
+    print(f"✅ Created completion marker with verification data: {done_marker.name}")
+    
     return avg_acc, avg_f1, avg_auc
 
 
+# ============================================================================
+# 5. Main Entry Point
+# ============================================================================
 def main(args):
     # Set device
     device = torch.device(args.device)
     print(f"Using device: {device}")
     
-    # Set random seed
+    # Set random seed for reproducibility
     torch.manual_seed(args.seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed(args.seed)
@@ -296,144 +626,11 @@ def main(args):
     print("Task Graph Classification")
     print("="*70)
     
-    # Select evaluation mode
+    # Dispatch to appropriate training function
     if args.eval_mode == 'loo':
-        # Leave-one-out cross-validation
-        avg_acc, avg_f1, avg_auc = train_and_evaluate_loo(args, device)
-        return
-    
-    # Otherwise use standard training process
-    print(f"\nLoading data from {args.data_path}...")
-    dataset = PreloadedGraphDataset(args.data_path, weights_only=False)
-    
-    # Simple validation check
-    sample = dataset[0]
-    print(f"Dataset size: {len(dataset)}")
-    print(f"Input channels: {sample.x.shape[1]} (expected: 258 = 256 features + 1 time + 1 mask)")
-    
-    # Split dataset
-    train_size = int(0.8 * len(dataset))
-    val_size = len(dataset) - train_size
-    train_dataset, val_dataset = torch.utils.data.random_split(
-        dataset, [train_size, val_size],
-        generator=torch.Generator().manual_seed(args.seed)
-    )
-    
-    # Create data loaders
-    train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True)
-    val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False)
-    
-    # Create model
-    in_channels = sample.x.shape[1]
-    print(f"\nCreating {args.model_type.upper()} model...")
-    
-    if args.model_type == 'dagnn':
-        model = DAGNN(
-            in_channels=in_channels,
-            hidden_channels=args.hidden_dim,
-            num_layers=args.num_layers,
-            num_classes=2,
-            dropout=args.dropout
-        )
-    elif args.model_type == 'gcn':
-        model = GCNClassifier(
-            in_channels=in_channels,
-            hidden_channels=args.hidden_dim,
-            num_layers=args.num_layers,
-            num_classes=2,
-            dropout=args.dropout
-        )
+        train_and_evaluate_loo(args, device)
     else:
-        raise ValueError(f"Unknown model type: {args.model_type}")
-    
-    model = model.to(device)
-    print(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}")
-    
-    # Create optimizer
-    optimizer = torch.optim.Adam(
-        model.parameters(),
-        lr=args.lr,
-        weight_decay=args.weight_decay
-    )
-    
-    # Training loop
-    print("\nStarting training...")
-    
-    best_val_acc = 0
-    best_val_f1 = 0   #  F1
-    best_val_auc = 0  #  AUC
-    patience_counter = 0
-    
-    for epoch in range(1, args.num_epochs + 1):
-        train_loss, train_acc = train_epoch(model, train_loader, optimizer, device)
-        
-        val_loss, val_acc, val_f1, val_auc, val_prec, val_rec = evaluate(model, val_loader, device)
-        
-        print(f"Epoch {epoch:03d}: "
-              f"Train Loss: {train_loss:.4f}, Acc: {train_acc:.4f} | "
-              f"Val Loss: {val_loss:.4f}, Acc: {val_acc:.4f}, F1: {val_f1:.4f}, AUC: {val_auc:.4f}")
-        
-        # Save best model logic
-        if val_acc > best_val_acc:
-            best_val_acc = val_acc
-            best_val_f1 = val_f1   # Update best record
-            best_val_auc = val_auc # Update best record
-            patience_counter = 0
-            
-            # Save checkpoint
-            checkpoint_dir = Path("results/checkpoints")
-            checkpoint_dir.mkdir(parents=True, exist_ok=True)
-            torch.save({
-                'epoch': epoch,
-                'model_state_dict': model.state_dict(),
-                'optimizer_state_dict': optimizer.state_dict(),
-                'val_acc': val_acc,
-                'args': vars(args)
-            }, checkpoint_dir / "best_model.pt")
-            # print(f"  → Saved checkpoint (val_acc: {val_acc:.4f})")
-        else:
-            patience_counter += 1
-            if patience_counter >= args.patience:
-                print(f"Early stopping after {epoch} epochs")
-                break
-    
-    print("\n" + "="*60)
-    print(f"Training completed! Best Val Acc: {best_val_acc:.4f} (F1: {best_val_f1:.4f}, AUC: {best_val_auc:.4f})")
-    print("="*60)
-
-    # ==========================
-    # [New Feature]: Auto-save experiment log to CSV
-    # ==========================
-    # Save results under results/ folder
-    results_dir = Path("results")
-    results_dir.mkdir(parents=True, exist_ok=True)
-    log_file = results_dir / "experiment_results.csv"
-    file_exists = os.path.isfile(log_file)
-    
-    with open(log_file, mode='a', newline='') as f:
-        writer = csv.writer(f)
-        # Write header
-        if not file_exists:
-            writer.writerow([
-                "Timestamp", "Model", "Dim", "Layers", "LR", "Drop", "Batch", 
-                "Best_Acc", "Best_F1", "Best_AUC", "Total_Epochs"
-            ])
-        
-        # Write data
-        writer.writerow([
-            time.strftime("%Y-%m-%d %H:%M"),
-            args.model_type,
-            args.hidden_dim,
-            args.num_layers,
-            args.lr,
-            args.dropout,
-            args.batch_size,
-            f"{best_val_acc:.4f}",
-            f"{best_val_f1:.4f}",
-            f"{best_val_auc:.4f}",
-            epoch
-        ])
-    print(f"Experiment results saved to {log_file}")
+        train_standard(args, device)
 
 
 if __name__ == "__main__":

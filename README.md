@@ -12,18 +12,21 @@ This project implements a GNN-based classifier to predict whether a recipe execu
 
 ```
 task-graph-classification/
-├── annotations/          # Git submodule (CaptainCook4D annotations)
-│   └── task_graphs/     # 24 standard recipe task graphs
+├── annotations/                # CaptainCook4D annotations (submodule)
+│   └── task_graphs/           # 24 standard recipe task graphs
 ├── data/
-│   ├── observed_graphs/ # Substep 3 outputs (from Google Drive)
-│   └── processed/       # Processed PyG data
-├── models/              # GNN model implementations (DAGNN, GCN)
-├── utils/               # Data loaders and graph utilities
-├── configs/             # Configuration management
-├── results/             # Training results and checkpoints
-├── train.py            # Training script
-├── evaluate.py         # Evaluation script (TODO)
-└── notebooks/          # Jupyter notebooks for experiments
+│   ├── extension3_outputs/    # Visual features, task graph encodings, fusion model
+│   └── processed_graphs.pt    # Extracted PyG graphs (384 videos)
+├── models/                    # GNN model implementations (DAGNN, GCN)
+├── configs/                   # Configuration files
+├── results/                   # Training results and checkpoints
+│   ├── checkpoints/           # Saved models (standard + LOO)
+│   ├── loo_results.csv        # Per-recipe metrics (LOO)
+│   └── loo_results_grid.csv   # Grid search summary (optional)
+├── extract_graphs.py          # Build graphs from Extension 3 outputs
+├── train.py                   # Training (standard + LOO)
+├── evaluate.py                # Evaluation of saved checkpoints
+└── run_experiments.py         # Full grid search
 ```
 
 ## Setup
@@ -81,70 +84,187 @@ drive.mount('/content/drive')
 
 ## Data
 
-### Input Data Sources
+### Input Data Sources (Extension 3 Outputs)
 
-1. **Standard Task Graphs** (from `annotations/task_graphs/`)
-2. **Observed Graphs** (from Google Drive → `data/observed_graphs/`)
-   - Output from Substep 3: Observed task graphs from video analysis
-   - Contains: Matched step sequences, graph structures, and labels
-   - Binary labels: 1=correct execution, 0=incorrect execution
-   - Observed task graphs from video analysis
-   - Matched step sequences and graph structures
-   - Binary labels (correct/incorrect execution)
+The `extract_graphs.py` script processes outputs from Extension 3 (Fusion & Matching) to create 384 PyG Data objects:
 
-### Data Format
+#### 1. **Visual Features** (`data/extension3_outputs/visual_features/`)
+   - `hiero_step_embeddings_256.npz`: Hierarchical visual embeddings for all 384 videos
+     - Shape: (384, 61, 256) = [num_videos, max_steps, embedding_dim]
+     - Contains step-level visual features extracted from video frames
+     - Includes step_mask indicating valid/invalid steps
+   - `visual_features_mapping.json`: Video-to-recipe mapping
+     - Maps video indices to recipe names (e.g., `{"0": "pinwheels", "1": "coffee", ...}`)
 
-Expected input format from Substep 3:
-```json
-{
-  "recipe_id": "coffee",
-  "video_id": "video_001",
-  "observed_steps": [0, 1, 2, 3, ...],
-  "matched_edges": [[0, 1], [1, 2], ...],
-  "label": 1
-}
+#### 2. **Task Graph Encodings** (`data/extension3_outputs/task_graph_encodings/`)
+   - `task_graph_embeddings.npz`: Text embeddings for 24 standard recipes
+     - Contains one array per recipe (e.g., `npz['coffee']` has shape [N, 256])
+     - N = number of standard steps for that recipe
+   - `task_graph_metadata.json`: Recipe structure metadata
+     - Contains step descriptions and graph edges for each recipe
+     - Example: `{"coffee": {"steps": {...}, "edges": [[0,1], [1,2], ...]}}`
+
+#### 3. **Fusion Model** (`data/extension3_outputs/fusion_model/`)
+   - `best_fusion_model.pth`: Trained fusion model checkpoint
+     - Fuses matched visual + task embeddings
+     - Supports multiple fusion types: concat, cross_attention, gated
+
+### Data Processing Pipeline
+
 ```
+For each video (384 total):
+  1. Load visual embeddings (variable number of valid steps)
+  2. Get task embeddings for matched recipe (fixed number of standard steps)
+  3. Hungarian matching: align visual steps to task steps
+  4. For each standard task step:
+     - If matched: fuse visual + task embedding using fusion model
+     - If unmatched: use zero-filled embedding (missing step indicator)
+  5. Construct graph with:
+     - Node features: [256-dim fused embeddings + time encoding + presence mask]
+     - Edges: from recipe metadata
+     - Label: correctness label (1=correct, 0=incorrect)
+  
+Output: 384 PyG Data objects saved to data/processed_graphs.pt
+```
+
+### Feature Dimensions
+
+Each node has **258 dimensions**:
+- 256: Fused embedding (visual + task)
+- 1: Normalized time encoding (step_position / total_steps)
+- 1: Presence indicator (1 if matched, 0 if missing)
 
 ## Usage
 
-### Training
+### Step 1: Extract Graphs
+
+Convert Extension 3 outputs to PyTorch Geometric Data objects:
 
 ```bash
-python train.py --config configs/dagnn_config.yaml
+# Basic usage (uses default paths)
+python extract_graphs.py
+
+# Custom paths
+python extract_graphs.py \
+    --hiero_embeddings data/extension3_outputs/visual_features/hiero_step_embeddings_256.npz \
+    --task_embeddings data/extension3_outputs/task_graph_encodings/task_graph_embeddings.npz \
+    --metadata data/extension3_outputs/task_graph_encodings/task_graph_metadata.json \
+    --fusion_checkpoint data/extension3_outputs/fusion_model/best_fusion_model.pth \
+    --output data/processed_graphs.pt \
+    --device cuda  # or 'cpu'
 ```
 
-### Evaluation
+**Output**: `data/processed_graphs.pt` (384 graphs ready for training)
+
+### Step 2: Train Model
 
 ```bash
-python evaluate.py --checkpoint results/checkpoints/best_model.pt
-```
+# Leave-One-Recipe-Out (LOO) cross-validation
+python train.py --eval_mode loo --model_type dagnn --num_epochs 50 --device cuda
 
-### In Colab
+# Standard train/val split (80/20)
+python train.py --eval_mode standard --model_type dagnn --num_epochs 100 --device cuda
 
-```python
-# Train with data from Google Drive
-!python train.py \
-    --observed_graphs_dir /content/drive/MyDrive/AML_Project/substep3_outputs \
+# With custom hyperparameters
+python train.py \
+    --eval_mode loo \
     --model_type dagnn \
-    --num_epochs 50
+    --hidden_dim 256 \
+    --num_layers 4 \
+    --batch_size 16 \
+    --lr 0.0005 \
+    --num_epochs 100
 ```
+
+**Output**: 
+- Per-recipe results: `results/loo_results.csv`
+- Per-recipe checkpoints: `results/checkpoints/loo/{recipe_name}_best.pt` (24 files)
+- Standard mode checkpoint: `results/checkpoints/best_model.pt` (if using `--eval_mode standard`)
+
+### Step 3: Evaluate Model
+
+Evaluate saved model checkpoints:
+
+```bash
+# Evaluate all LOO checkpoints (24 models)
+python evaluate.py --eval_loo --device cuda
+
+# Evaluate a single checkpoint (standard mode)
+python evaluate.py --checkpoint results/checkpoints/best_model.pt --device cuda
+
+# Evaluate a specific recipe's LOO checkpoint
+python evaluate.py --checkpoint results/checkpoints/loo/coffee_best.pt --device cuda
+```
+
+**Output**: Confusion matrix saved to `results/evaluation/confusion_matrix.png`
+
+### Step 4: Grid Search (Optional)
+
+Run hyperparameter grid search over multiple configurations:
+
+```bash
+# This will train multiple models with different hyperparameters using LOO cross-validation
+python run_experiments.py
+```
+
+**Output**: 
+- Aggregated results: `results/loo_results_grid.csv`
+- Top 5 best configurations printed at the end
+
+## Evaluation Strategy
+
+**Leave-One-Recipe-Out (LOO) Cross-Validation:**
+- Use all samples from one recipe as the test set
+- Train on the remaining 23 recipes
+- Repeat for all 24 recipes
+- Report per-recipe and average metrics (Accuracy, F1, AUC, Precision, Recall)
+
+**Standard Train/Val Split:**
+- 80% training, 20% validation
+- Single train/val run with early stopping
 
 ## Model Architecture
 
 - **DAGNN** (Directed Acyclic Graph Neural Network) - Recommended
 - **GCN** (Graph Convolutional Network)
-- **GraphSAGE**
-
-## Evaluation Strategy
-
-Leave-One-Out (LOO) validation:
-- Train on (k-1) recipes
-- Test on the k-th recipe
-- Repeat for all 24 recipes
 
 ## Results
 
-Results and checkpoints will be saved in `results/` directory.
+Results and checkpoints are saved in `results/` directory:
+
+### LOO Mode (Leave-One-Recipe-Out)
+
+- **`loo_results.csv`**: Per-recipe metrics from LOO cross-validation
+  - Columns: Recipe, Accuracy, F1, AUC, Precision, Recall
+  - Last row: Average across all 24 recipes
+  
+- **`checkpoints/loo/{recipe_name}_best.pt`**: Model checkpoint for each recipe (24 files)
+  - Each checkpoint contains: model_state_dict, test metrics, model config
+  
+- **`loo_results_grid.csv`**: Grid search results (if using `run_experiments.py`)
+  - Compares different hyperparameter configurations
+
+### Standard Mode (80/20 Split)
+  
+- **`experiment_results.csv`**: Training log for standard train/val splits
+  - Columns: Timestamp, ModelType, HiddenDim, NumLayers, LR, Dropout, BatchSize, BestAcc, BestF1, BestAUC, Epoch
+
+- **`checkpoints/best_model.pt`**: Best model state dict from training
+
+### Evaluation Outputs
+
+- **`evaluation/confusion_matrix.png`**: Confusion matrix visualization
+
+### Example LOO Results
+
+```
+Recipe,Accuracy,F1,AUC,Precision,Recall
+blenderbananapancakes,0.6316,0.3871,0.3095,0.3158,0.5000
+coffee,0.4667,0.3182,0.5625,0.2333,0.5000
+zoodles,0.8667,0.8295,0.8409,0.8295,0.8295
+...
+Average,0.5140,0.4333,0.5024,0.4488,0.5048
+```
 
 ## Citation
 
@@ -156,11 +276,12 @@ Results and checkpoints will be saved in `results/` directory.
   year={2023}
 }
 ```
-
 ## License
 
 MIT License
 
 ## Contact
 
-For questions, please contact: [Your Email]
+For questions, please open an issue on GitHub.
+
+
