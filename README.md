@@ -39,8 +39,10 @@ task-graph-classification/
 
 ### Installation
 
+#### Option 1: Local Installation (macOS/Linux/Windows - CPU)
+
+**Step 1: Clone Repository**
 ```bash
-# Clone the repository with submodules
 git clone --recursive https://github.com/storylei/task-graph-classification.git
 cd task-graph-classification
 
@@ -50,37 +52,54 @@ git submodule update
 
 # Verify annotations (should see 24 recipe JSON files)
 ls annotations/task_graphs/
-
-# Install dependencies - Step 1: Core packages
-pip install torch numpy pandas scipy scikit-learn networkx matplotlib seaborn tensorboard tqdm pyyaml jupyter
-
-# Install dependencies - Step 2: PyTorch Geometric
-pip install torch-geometric
-
 ```
 
-**Why two-step installation?** PyTorch Geometric extensions (`torch-scatter`, `torch-sparse`) require compilation and need PyTorch to be installed first. The core `torch-geometric` package is sufficient for this project.
+**Step 2: Install Dependencies**
+```bash
+# Core packages
+pip install torch numpy pandas scipy scikit-learn networkx matplotlib seaborn tensorboard tqdm pyyaml jupyter
 
-### For Google Colab
+# PyTorch Geometric
+pip install torch_geometric
+```
 
+#### Option 2: Google Colab Installation (CUDA)
+
+**Step 1: Clone Repository**
 ```python
-# Clone with submodules
 !git clone --recursive https://github.com/storylei/task-graph-classification.git
 %cd task-graph-classification
 
 # Initialize submodule (if needed)
 !git submodule init && git submodule update
+```
 
-# Install dependencies - Step 1: Core packages
-!pip install torch numpy pandas scipy scikit-learn networkx matplotlib seaborn tensorboard tqdm pyyaml jupyter
+**Step 2: Install Dependencies**
+```python
+# Core packages
+!pip install -q torch numpy pandas scipy scikit-learn networkx matplotlib seaborn tensorboard tqdm pyyaml jupyter
 
-# Install dependencies - Step 2: PyTorch Geometric
-!pip install torch-geometric
+# PyTorch Geometric (includes CUDA support automatically)
+!pip install -q torch_geometric
+```
 
-# Mount Google Drive for Substep 3 outputs
+**Step 3: Verify Installation**
+```python
+import torch
+print(f"✓ PyTorch: {torch.__version__}")
+print(f"✓ CUDA: {torch.version.cuda}")
+print(f"✓ GPU: {torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'None'}")
+
+import torch_geometric
+print(f"✓ PyTorch Geometric: {torch_geometric.__version__}")
+```
+
+**Step 4: Mount Google Drive (Optional)**
+```python
 from google.colab import drive
 drive.mount('/content/drive')
 ```
+
 
 ## Data
 
