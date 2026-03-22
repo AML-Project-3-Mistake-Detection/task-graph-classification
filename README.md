@@ -165,7 +165,7 @@ python extract_graphs.py
 
 # Custom paths
 python extract_graphs.py \
-    --hiero_embeddings data/extension3_outputs/visual_features/hiero_step_embeddings_256.npz \
+    --matched_pairs data/extension3_outputs/matched_features/matched_pairs.json \
     --task_embeddings data/extension3_outputs/task_graph_encodings/task_graph_embeddings.npz \
     --metadata data/extension3_outputs/task_graph_encodings/task_graph_metadata.json \
     --fusion_checkpoint data/extension3_outputs/fusion_model/best_fusion_model.pth \
