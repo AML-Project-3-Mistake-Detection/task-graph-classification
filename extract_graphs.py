@@ -117,7 +117,16 @@ def build_dataset(args):
     recording_to_pairs = defaultdict(list)
     for pair in pairs:
         recording_to_pairs[pair['recording_id']].append(pair)
-    print(f"✓ Found {len(recording_to_pairs)} unique recordings")
+    print("✓ Found {len(recording_to_pairs)} unique recordings")
+
+    # 1.5 Load true labels from original annotations
+    print("[1.5/4] Loading true labels from original annotations...")
+    with open('annotations/annotation_json/error_annotations.json', 'r') as f:
+        err_ann = json.load(f)
+    rec_to_label = {}
+    for entry in err_ann:
+        rec_to_label[entry['recording_id']] = 0 if entry['is_error'] else 1
+    print(f"✓ Loaded {len(rec_to_label)} true labels")
 
     # 2. Load task graph embeddings (Base nodes)
     print("[2/4] Loading base task graph embeddings...")
@@ -140,7 +149,12 @@ def build_dataset(args):
 
     for recording_id, matched_steps in tqdm(recording_to_pairs.items(), desc="Processing recordings"):
         task_name = matched_steps[0]['task_name']
-        label = matched_steps[0]['video_label']
+        
+        # Override the label from substep 3 with the original annotation if available
+        if recording_id in rec_to_label:
+            label = rec_to_label[recording_id]
+        else:
+            label = matched_steps[0].get('video_label', 1)
         
         # Make sure task base data exists
         if task_name not in tg_data.files or task_name not in tg_meta:
