@@ -6,7 +6,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch_geometric.nn import MessagePassing
-from torch_geometric.utils import add_self_loops
 
 
 class DAGNNConv(MessagePassing):
@@ -16,22 +15,24 @@ class DAGNNConv(MessagePassing):
     """
     
     def __init__(self, in_channels, out_channels):
-        super().__init__(aggr='add', flow='source_to_target')
-        self.lin = nn.Linear(in_channels, out_channels)
+        super().__init__(aggr='mean', flow='source_to_target')
+        self.lin_neigh = nn.Linear(in_channels, out_channels)
+        self.lin_self = nn.Linear(in_channels, out_channels)
         self.reset_parameters()
     
     def reset_parameters(self):
-        self.lin.reset_parameters()
+        self.lin_neigh.reset_parameters()
+        self.lin_self.reset_parameters()
     
     def forward(self, x, edge_index):
-        # Add self-loops
-        edge_index, _ = add_self_loops(edge_index, num_nodes=x.size(0))
-        
-        # Transform node features
-        x = self.lin(x)
-        
-        # Propagate messages
-        return self.propagate(edge_index, x=x)
+        # Aggregate predecessor features with mean to avoid degree-driven explosions
+        neigh_out = self.propagate(edge_index, x=x)
+        neigh_out = self.lin_neigh(neigh_out)
+
+        # Transform self feature with an independent projection
+        self_out = self.lin_self(x)
+
+        return self_out + neigh_out
     
     def message(self, x_j):
         # x_j: features of neighbor nodes
@@ -54,16 +55,27 @@ class DAGNN(nn.Module):
                  num_layers,
                  num_classes=2,
                  dropout=0.3,
+                 input_dropout=0.3,
+                 classifier_dropout=0.5,
                  pooling='mean'):
         super().__init__()
         
         self.num_layers = num_layers
         self.dropout = dropout
+        self.input_dropout = input_dropout
+        self.classifier_dropout = classifier_dropout
         self.pooling = pooling
+
+        self.input_proj = nn.Sequential(
+            nn.Linear(in_channels, hidden_channels),
+            nn.BatchNorm1d(hidden_channels),
+            nn.ReLU(),
+            nn.Dropout(dropout)
+        )
         
         # DAGNN layers
         self.convs = nn.ModuleList()
-        self.convs.append(DAGNNConv(in_channels, hidden_channels))
+        self.convs.append(DAGNNConv(hidden_channels, hidden_channels))
         
         for _ in range(num_layers - 1):
             self.convs.append(DAGNNConv(hidden_channels, hidden_channels))
@@ -74,11 +86,13 @@ class DAGNN(nn.Module):
             self.bns.append(nn.BatchNorm1d(hidden_channels))
         
         # Classifier
+        pooled_dim = hidden_channels * 2 if pooling == 'mean_max' else hidden_channels
+        classifier_hidden = max(hidden_channels // 2, 1)
         self.classifier = nn.Sequential(
-            nn.Linear(hidden_channels, hidden_channels // 2),
+            nn.Linear(pooled_dim, classifier_hidden),
             nn.ReLU(),
-            nn.Dropout(dropout),
-            nn.Linear(hidden_channels // 2, num_classes)
+            nn.Dropout(classifier_dropout),
+            nn.Linear(classifier_hidden, num_classes)
         )
     
     def forward(self, x, edge_index, batch):
@@ -93,6 +107,9 @@ class DAGNN(nn.Module):
         Returns:
             logits: Class logits [batch_size, num_classes]
         """
+        x = F.dropout(x, p=self.input_dropout, training=self.training)
+        x = self.input_proj(x)
+
         # DAGNN layers
         for i, (conv, bn) in enumerate(zip(self.convs, self.bns)):
             x = conv(x, edge_index)

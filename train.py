@@ -26,7 +26,17 @@ from models.dagnn import DAGNN, GCNClassifier
 # ============================================================================
 # 1. Helper Functions
 # ============================================================================
-def create_model(model_type, in_channels, hidden_channels, num_layers, dropout, device):
+def create_model(
+    model_type,
+    in_channels,
+    hidden_channels,
+    num_layers,
+    dropout,
+    device,
+    pooling='mean',
+    input_dropout=0.3,
+    classifier_dropout=0.5,
+):
     """Create model based on configuration."""
     if model_type == 'dagnn':
         model = DAGNN(
@@ -34,7 +44,10 @@ def create_model(model_type, in_channels, hidden_channels, num_layers, dropout, 
             hidden_channels=hidden_channels,
             num_layers=num_layers,
             num_classes=2,
-            dropout=dropout
+            dropout=dropout,
+            input_dropout=input_dropout,
+            classifier_dropout=classifier_dropout,
+            pooling=pooling,
         )
     elif model_type == 'gcn':
         model = GCNClassifier(
@@ -284,7 +297,10 @@ def train_standard(args, device):
     in_channels = sample.x.shape[1]
     print(f"\nCreating {args.model_type.upper()} model...")
     model = create_model(args.model_type, in_channels, args.hidden_dim, 
-                        args.num_layers, args.dropout, device)
+                        args.num_layers, args.dropout, device,
+                        pooling=args.pooling,
+                        input_dropout=args.input_dropout,
+                        classifier_dropout=args.classifier_dropout)
     print(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}")
     
     # Optimizer
@@ -343,7 +359,10 @@ def train_standard(args, device):
                     'hidden_channels': args.hidden_dim,
                     'num_layers': args.num_layers,
                     'num_classes': 2,
-                    'dropout': args.dropout
+                    'dropout': args.dropout,
+                    'pooling': args.pooling,
+                    'input_dropout': args.input_dropout,
+                    'classifier_dropout': args.classifier_dropout,
                 },
                 args=vars(args)
             )
@@ -454,7 +473,10 @@ def train_and_evaluate_loo(args, device):
         # Create model
         in_channels = dataset[0].x.shape[1]
         model = create_model(args.model_type, in_channels, args.hidden_dim,
-                           args.num_layers, args.dropout, device)
+                           args.num_layers, args.dropout, device,
+                           pooling=args.pooling,
+                           input_dropout=args.input_dropout,
+                           classifier_dropout=args.classifier_dropout)
         
         # Optimizer
         optimizer = torch.optim.Adam(
@@ -518,7 +540,10 @@ def train_and_evaluate_loo(args, device):
                 'hidden_channels': args.hidden_dim,
                 'num_layers': args.num_layers,
                 'num_classes': 2,
-                'dropout': args.dropout
+                'dropout': args.dropout,
+                'pooling': args.pooling,
+                'input_dropout': args.input_dropout,
+                'classifier_dropout': args.classifier_dropout,
             }
         )
         
@@ -654,6 +679,13 @@ if __name__ == "__main__":
                        help='Number of GNN layers')
     parser.add_argument('--dropout', type=float, default=0.3,
                        help='Dropout rate')
+    parser.add_argument('--input_dropout', type=float, default=0.3,
+                       help='Dropout on raw node inputs before projection (DAGNN only)')
+    parser.add_argument('--classifier_dropout', type=float, default=0.5,
+                       help='Dropout in classifier head (DAGNN only)')
+    parser.add_argument('--pooling', type=str, default='mean',
+                       choices=['mean', 'max', 'mean_max'],
+                       help='Global pooling mode (DAGNN only)')
     
     # Training arguments
     parser.add_argument('--batch_size', type=int, default=8,
