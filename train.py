@@ -18,9 +18,21 @@ import json
 from datetime import datetime
 
 # Import sklearn metrics
-from sklearn.metrics import f1_score, roc_auc_score, precision_score, recall_score
+from sklearn.metrics import (
+    f1_score,
+    roc_auc_score,
+    precision_score,
+    recall_score,
+    roc_curve,
+    precision_recall_curve,
+)
 
 from models.dagnn import DAGNN, GCNClassifier
+
+try:
+    import wandb
+except ImportError:
+    wandb = None
 
 
 # ============================================================================
@@ -126,6 +138,92 @@ def save_checkpoint(model, checkpoint_path, **metadata):
         **metadata
     }
     torch.save(checkpoint, checkpoint_path)
+
+
+def init_wandb(args):
+    """Initialize Weights & Biases run if enabled."""
+    if not args.use_wandb:
+        return None
+
+    if wandb is None:
+        print("⚠️  wandb is not installed. Disable --use_wandb or install wandb.")
+        return None
+
+    run_name = args.wandb_run_name
+    if not run_name:
+        run_name = (
+            f"{args.eval_mode}_{args.model_type}_h{args.hidden_dim}_"
+            f"l{args.num_layers}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        )
+
+    return wandb.init(
+        project=args.wandb_project,
+        entity=args.wandb_entity,
+        name=run_name,
+        mode=args.wandb_mode,
+        config=vars(args),
+        tags=[args.eval_mode, args.model_type],
+    )
+
+
+def log_to_wandb(metrics, step=None):
+    """Safe wrapper for logging metrics to wandb."""
+    if wandb is not None and wandb.run is not None:
+        wandb.log(metrics, step=step)
+
+
+def log_curves_to_wandb(split_name, y_true, y_probs, step=None):
+    """Log ROC/PR curve images and curve tables for binary classification."""
+    if wandb is None or wandb.run is None:
+        return
+
+    y_true = np.asarray(y_true)
+    y_probs = np.asarray(y_probs)
+
+    # ROC/AUC curve is undefined when only one class is present.
+    if len(np.unique(y_true)) < 2:
+        return
+
+    fpr, tpr, _ = roc_curve(y_true, y_probs)
+    precision, recall, _ = precision_recall_curve(y_true, y_probs)
+
+    roc_table = wandb.Table(data=[[float(x), float(y)] for x, y in zip(fpr, tpr)], columns=['fpr', 'tpr'])
+    pr_table = wandb.Table(data=[[float(x), float(y)] for x, y in zip(recall, precision)], columns=['recall', 'precision'])
+
+    log_data = {
+        f'{split_name}/roc_table': roc_table,
+        f'{split_name}/pr_table': pr_table,
+    }
+
+    try:
+        import matplotlib.pyplot as plt
+
+        roc_auc = roc_auc_score(y_true, y_probs)
+
+        fig_roc, ax_roc = plt.subplots(figsize=(5, 4))
+        ax_roc.plot(fpr, tpr, label=f'AUC={roc_auc:.4f}')
+        ax_roc.plot([0, 1], [0, 1], linestyle='--', alpha=0.6)
+        ax_roc.set_xlabel('False Positive Rate')
+        ax_roc.set_ylabel('True Positive Rate')
+        ax_roc.set_title(f'ROC Curve ({split_name})')
+        ax_roc.legend(loc='lower right')
+        fig_roc.tight_layout()
+        log_data[f'{split_name}/roc_curve'] = wandb.Image(fig_roc)
+        plt.close(fig_roc)
+
+        fig_pr, ax_pr = plt.subplots(figsize=(5, 4))
+        ax_pr.plot(recall, precision)
+        ax_pr.set_xlabel('Recall')
+        ax_pr.set_ylabel('Precision')
+        ax_pr.set_title(f'PR Curve ({split_name})')
+        fig_pr.tight_layout()
+        log_data[f'{split_name}/pr_curve'] = wandb.Image(fig_pr)
+        plt.close(fig_pr)
+    except Exception:
+        # Keep scalar/table logging even if plotting backend is unavailable.
+        pass
+
+    wandb.log(log_data, step=step)
 
 
 # ============================================================================
@@ -281,6 +379,13 @@ def train_standard(args, device):
     )
     
     print(f"Train size: {train_size} | Val size: {val_size}")
+
+    log_to_wandb({
+        'data/total_samples': len(dataset),
+        'data/train_samples': train_size,
+        'data/val_samples': val_size,
+        'data/input_channels': int(sample.x.shape[1]),
+    })
     
     # Create data loaders
     train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True)
@@ -329,6 +434,17 @@ def train_standard(args, device):
         print(f"Epoch {epoch:03d}: "
               f"Train Loss: {train_loss:.4f}, Acc: {train_acc:.4f} | "
               f"Val Loss: {val_loss:.4f}, Acc: {val_acc:.4f}, F1: {val_f1:.4f}, AUC: {val_auc:.4f}")
+
+        log_to_wandb({
+            'train/loss': train_loss,
+            'train/acc': train_acc,
+            'val/loss': val_loss,
+            'val/acc': val_acc,
+            'val/f1': val_f1,
+            'val/auc': val_auc,
+            'val/precision': val_prec,
+            'val/recall': val_rec,
+        }, step=epoch)
         
         # IMPROVEMENT 1 & 2: Save best model based on F1 (not Acc)
         # Also tune threshold on validation set
@@ -343,6 +459,16 @@ def train_standard(args, device):
             best_threshold = threshold
             
             print(f"  ✓ New best F1! Threshold: {best_threshold:.3f} (tuned F1: {threshold_f1:.4f})")
+
+            log_to_wandb({
+                'best/val_f1': best_val_f1,
+                'best/val_acc': best_val_acc,
+                'best/val_auc': best_val_auc,
+                'best/threshold': best_threshold,
+                'best/tuned_val_f1': threshold_f1,
+            }, step=epoch)
+
+            log_curves_to_wandb('best_val', val_labels, val_probs, step=epoch)
             
             save_checkpoint(
                 model,
@@ -408,6 +534,12 @@ def train_standard(args, device):
         ])
     
     print(f"Experiment results saved to {log_file}")
+    log_to_wandb({
+        'summary/best_val_f1': best_val_f1,
+        'summary/best_val_acc': best_val_acc,
+        'summary/best_val_auc': best_val_auc,
+        'summary/best_threshold': best_threshold,
+    })
     return best_val_f1, best_val_acc, best_val_auc
 
 
@@ -439,12 +571,17 @@ def train_and_evaluate_loo(args, device):
     
     recipes = sorted(recipe_groups.keys())
     print(f"Found {len(recipes)} recipes: {recipes}")
+
+    log_to_wandb({
+        'data/total_samples': len(dataset),
+        'data/num_recipes': len(recipes),
+    })
     
     # Store results for each recipe
     recipe_results = []
     
     # Perform leave-one-out test for each recipe
-    for test_recipe in recipes:
+    for recipe_idx, test_recipe in enumerate(recipes):
         print(f"\n{'='*70}")
         print(f"Testing on recipe: {test_recipe}")
         print(f"{'='*70}")
@@ -518,6 +655,15 @@ def train_and_evaluate_loo(args, device):
             
             if epoch % 10 == 0 or epoch == 1:
                 print(f"  Epoch {epoch:03d}: Train Loss={train_loss:.4f}, Acc={train_acc:.4f}, F1={train_eval_f1:.4f}")
+
+            global_step = recipe_idx * args.num_epochs + epoch
+            log_to_wandb({
+                'loo/train_loss': train_loss,
+                'loo/train_acc': train_acc,
+                'loo/train_eval_f1': train_eval_f1,
+                'loo/train_eval_auc': train_eval_auc,
+                'loo/best_threshold': best_threshold,
+            }, step=global_step)
         
         # Evaluate on test set using tuned threshold
         test_loss, test_acc, test_f1, test_auc, test_prec, test_rec, test_probs, test_labels_np = evaluate(
@@ -550,6 +696,18 @@ def train_and_evaluate_loo(args, device):
         print(f"\n  Test Results for {test_recipe} (Threshold: {best_threshold:.3f}):")
         print(f"    Acc={test_acc:.4f}, F1={test_f1:.4f}, AUC={test_auc:.4f}")
         print(f"    Precision={test_prec:.4f}, Recall={test_rec:.4f}")
+
+        log_to_wandb({
+            'loo_test/accuracy': test_acc,
+            'loo_test/f1': test_f1,
+            'loo_test/auc': test_auc,
+            'loo_test/precision': test_prec,
+            'loo_test/recall': test_rec,
+            'loo_test/threshold': best_threshold,
+        })
+
+        safe_recipe = str(test_recipe).replace('/', '_').replace(' ', '_')
+        log_curves_to_wandb(f'loo_test/{safe_recipe}', test_labels_np, test_probs)
         
         recipe_results.append({
             'recipe': test_recipe,
@@ -585,6 +743,29 @@ def train_and_evaluate_loo(args, device):
     print(f"Precision: {avg_prec:.4f} ± {np.std([r['precision'] for r in recipe_results]):.4f}")
     print(f"Recall:    {avg_rec:.4f} ± {np.std([r['recall'] for r in recipe_results]):.4f}")
     print(f"Avg Threshold: {avg_threshold:.3f}")
+
+    log_to_wandb({
+        'summary/loo_avg_accuracy': avg_acc,
+        'summary/loo_avg_f1': avg_f1,
+        'summary/loo_avg_auc': avg_auc,
+        'summary/loo_avg_precision': avg_prec,
+        'summary/loo_avg_recall': avg_rec,
+        'summary/loo_avg_threshold': avg_threshold,
+    })
+
+    if wandb is not None and wandb.run is not None:
+        table = wandb.Table(columns=['recipe', 'accuracy', 'f1', 'auc', 'precision', 'recall', 'threshold'])
+        for result in recipe_results:
+            table.add_data(
+                result['recipe'],
+                result['accuracy'],
+                result['f1'],
+                result['auc'],
+                result['precision'],
+                result['recall'],
+                result['threshold'],
+            )
+        wandb.log({'loo/per_recipe_table': table})
     
     # Save results to CSV
     results_dir = Path("results")
@@ -650,12 +831,18 @@ def main(args):
     print("="*70)
     print("Task Graph Classification")
     print("="*70)
-    
-    # Dispatch to appropriate training function
-    if args.eval_mode == 'loo':
-        train_and_evaluate_loo(args, device)
-    else:
-        train_standard(args, device)
+
+    init_wandb(args)
+
+    try:
+        # Dispatch to appropriate training function
+        if args.eval_mode == 'loo':
+            train_and_evaluate_loo(args, device)
+        else:
+            train_standard(args, device)
+    finally:
+        if wandb is not None and wandb.run is not None:
+            wandb.finish()
 
 
 if __name__ == "__main__":
@@ -710,6 +897,19 @@ if __name__ == "__main__":
                        help='Device to use')
     parser.add_argument('--seed', type=int, default=42,
                        help='Random seed')
+
+    # W&B logging arguments
+    parser.add_argument('--use_wandb', action='store_true',
+                       help='Enable Weights & Biases logging')
+    parser.add_argument('--wandb_project', type=str, default='task-graph-classification',
+                       help='W&B project name')
+    parser.add_argument('--wandb_entity', type=str, default=None,
+                       help='W&B entity/team name')
+    parser.add_argument('--wandb_run_name', type=str, default=None,
+                       help='W&B run name (optional)')
+    parser.add_argument('--wandb_mode', type=str, default='online',
+                       choices=['online', 'offline', 'disabled'],
+                       help='W&B logging mode')
     
     args = parser.parse_args()
     main(args)
