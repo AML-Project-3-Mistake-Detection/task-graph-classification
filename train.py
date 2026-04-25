@@ -106,7 +106,7 @@ def find_best_threshold(y_true, y_probs, metric='f1'):
         best_threshold, best_metric_value
     """
     thresholds = np.arange(0.1, 1.0, 0.05)
-    best_threshold = 0.5
+    best_threshold = 0.6
     best_value = 0.0
     
     for threshold in thresholds:
@@ -296,7 +296,7 @@ def evaluate(model, loader, device, threshold=None):
     Evaluate model with full metrics (Acc, F1, AUC, Precision, Recall)
     
     Args:
-        threshold: If provided, use this threshold instead of 0.5 for binary classification
+        threshold: If provided, use this threshold instead of 0.6 for binary classification
     """
     model.eval()
     total_loss = 0
@@ -317,11 +317,9 @@ def evaluate(model, loader, device, threshold=None):
         # Get probabilities (Class 1) and predicted classes
         probs = torch.softmax(out, dim=1)[:, 1]
         
-        # Use custom threshold if provided, else default to 0.5
-        if threshold is not None:
-            preds = (probs >= threshold).long()
-        else:
-            preds = out.argmax(dim=1)
+        # Use custom threshold if provided, else default to 0.6
+        current_threshold = threshold if threshold is not None else 0.6
+        preds = (probs >= current_threshold).long()
         
         # Collect data (convert to numpy)
         all_probs.extend(probs.cpu().numpy())
@@ -420,7 +418,7 @@ def train_standard(args, device):
     best_val_f1 = 0  # Now tracking best F1 instead of best Acc
     best_val_acc = 0
     best_val_auc = 0
-    best_threshold = 0.5  # Store best threshold
+    best_threshold = 0.6  # Store best threshold
     patience_counter = 0
     
     for epoch in range(1, args.num_epochs + 1):
@@ -624,7 +622,7 @@ def train_and_evaluate_loo(args, device):
         
         # Training loop with Best-by-F1
         best_train_f1 = 0  # Now tracking best F1
-        best_threshold = 0.5
+        best_threshold = 0.6
         patience_counter = 0
         
         # Store predictions for threshold tuning
