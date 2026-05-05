@@ -83,7 +83,15 @@ def load_fusion_model(checkpoint_path: str, device: str, default_dim: int = 32) 
         state_dict = checkpoint['model_state_dict']
         embedding_dim = checkpoint.get('embedding_dim', default_dim)
         fusion_type = checkpoint.get('fusion_type', 'concat')
-        hidden_dim = checkpoint.get('hidden_dim', default_dim * 2)
+        
+        # Deduce hidden_dim from state_dict if not explicitly saved
+        if 'hidden_dim' in checkpoint:
+            hidden_dim = checkpoint['hidden_dim']
+        elif 'fusion.0.weight' in state_dict:
+            hidden_dim = state_dict['fusion.0.weight'].shape[0]
+        else:
+            hidden_dim = default_dim * 2
+            
         output_dim = checkpoint.get('output_dim', default_dim)
         
         model = FeatureFusionModule(
