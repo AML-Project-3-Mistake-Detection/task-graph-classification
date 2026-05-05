@@ -858,7 +858,7 @@ if __name__ == "__main__":
     parser.add_argument('--model_type', type=str, default='dagnn',
                        choices=['dagnn', 'gcn'],
                        help='Model architecture')
-    parser.add_argument('--hidden_dim', type=int, default=128,
+    parser.add_argument('--hidden_dim', type=int, default=32,
                        help='Hidden dimension size')
     parser.add_argument('--num_layers', type=int, default=3,
                        help='Number of GNN layers')

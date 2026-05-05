@@ -31,11 +31,11 @@ class Config:
     DRIVE_OBSERVED_GRAPHS_DIR = "/content/drive/MyDrive/AML_Project/substep3_outputs"
     
     # Extension3 settings
-    USE_EXTENSION3_EMBEDDINGS = True  # Use 256D hiero embeddings vs one-hot
+    USE_EXTENSION3_EMBEDDINGS = True  # Use 32D hiero embeddings vs one-hot
     
     # Model settings
     MODEL_TYPE = "dagnn"  # Options: dagnn, gcn, graphsage
-    HIDDEN_DIM = 128      # Hidden layer dimension
+    HIDDEN_DIM = 32      # Hidden layer dimension
     NUM_LAYERS = 3        # Number of GNN layers
     DROPOUT = 0.3         # Dropout rate for regularization
     

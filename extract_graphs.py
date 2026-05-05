@@ -29,7 +29,7 @@ from torch_geometric.utils import add_self_loops
 
 class FeatureFusionModule(nn.Module):
     """Fusion model from Substep 3."""
-    def __init__(self, embedding_dim=256, hidden_dim=512, output_dim=256, fusion_type='concat'):
+    def __init__(self, embedding_dim=32, hidden_dim=64, output_dim=32, fusion_type='concat'):
         super().__init__()
         self.fusion_type = fusion_type
         self.embedding_dim = embedding_dim
@@ -75,16 +75,16 @@ class FeatureFusionModule(nn.Module):
         return fused
 
 
-def load_fusion_model(checkpoint_path: str, device: str) -> FeatureFusionModule:
+def load_fusion_model(checkpoint_path: str, device: str, default_dim: int = 32) -> FeatureFusionModule:
     """Load fusion model from checkpoint."""
     checkpoint = torch.load(checkpoint_path, map_location=device)
     
     if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
         state_dict = checkpoint['model_state_dict']
-        embedding_dim = checkpoint.get('embedding_dim', 256)
+        embedding_dim = checkpoint.get('embedding_dim', default_dim)
         fusion_type = checkpoint.get('fusion_type', 'concat')
-        hidden_dim = checkpoint.get('hidden_dim', 512)
-        output_dim = checkpoint.get('output_dim', 256)
+        hidden_dim = checkpoint.get('hidden_dim', default_dim * 2)
+        output_dim = checkpoint.get('output_dim', default_dim)
         
         model = FeatureFusionModule(
             embedding_dim=embedding_dim,
@@ -94,7 +94,7 @@ def load_fusion_model(checkpoint_path: str, device: str) -> FeatureFusionModule:
         )
         model.load_state_dict(state_dict)
     else:
-        model = FeatureFusionModule(fusion_type='concat')
+        model = FeatureFusionModule(embedding_dim=default_dim, hidden_dim=default_dim*2, output_dim=default_dim, fusion_type='concat')
         if isinstance(checkpoint, dict):
             model.load_state_dict(checkpoint)
         else:
@@ -139,7 +139,7 @@ def build_dataset(args):
         
     # 4. Load Fusion Model
     print("[4/4] Loading trained fusion model...")
-    fusion_model = load_fusion_model(args.fusion_model, args.device)
+    fusion_model = load_fusion_model(args.fusion_model, args.device, default_dim=args.embedding_dim)
 
     all_graphs = []
     
@@ -163,7 +163,7 @@ def build_dataset(args):
         # Get base edges and adjust if necessary
         standard_edges = tg_meta[task_name].get('edges', [])
         
-        # Initialize node features with base task embeddings (Shape: num_nodes, 256)
+        # Initialize node features with base task embeddings (Shape: num_nodes, args.embedding_dim)
         node_features = tg_data[task_name].copy()
         num_std_steps = node_features.shape[0]
 
@@ -179,7 +179,7 @@ def build_dataset(args):
                 task_emb = torch.tensor(pair['task_embedding'], dtype=torch.float32).to(args.device)
                 visual_emb = torch.tensor(pair['visual_embedding'], dtype=torch.float32).to(args.device)
                 
-                # Forward pass: shape requires [1, 256]
+                # Forward pass: shape requires [1, args.embedding_dim]
                 fused_emb = fusion_model(task_emb.unsqueeze(0), visual_emb.unsqueeze(0))
                 
                 # Overwrite original embedding with fused embedding
@@ -250,6 +250,12 @@ if __name__ == '__main__':
         type=str,
         default='data/extension3_outputs/fusion_model/best_fusion_model.pth',
         help='Path to pretrained visual-text best_fusion_model.pth'
+    )
+    parser.add_argument(
+        '--embedding_dim',
+        type=int,
+        default=32,
+        help='Dimension of the embeddings'
     )
     parser.add_argument(
         '--output',
