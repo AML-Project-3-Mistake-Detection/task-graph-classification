@@ -248,15 +248,26 @@ for i, params in enumerate(combinations):
                 
     except subprocess.CalledProcessError as e:
         print(f"❌ Experiment failed: {e}")
-        result = {
-            **params,
-            'avg_accuracy': None,
-            'avg_f1': None,
-            'avg_auc': None,
-            'avg_precision': None,
-            'avg_recall': None,
-            'duration_sec': None
-        }
+        if eval_mode == 'loo':
+            result = {
+                **params,
+                'avg_accuracy': None,
+                'avg_f1': None,
+                'avg_auc': None,
+                'avg_precision': None,
+                'avg_recall': None,
+                'duration_sec': None
+            }
+        else:
+            result = {
+                **params,
+                'best_accuracy': None,
+                'best_f1': None,
+                'best_auc': None,
+                'best_threshold': None,
+                'duration_sec': None
+            }
+        
         all_results.append(result)
         
         # Save even failed experiments, but DO NOT mark as completed
