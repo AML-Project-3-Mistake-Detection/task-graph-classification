@@ -177,6 +177,12 @@ def build_dataset(args):
 
         # Update matched nodes with fused features
         with torch.no_grad():
+            # Add explicit step-matching metadata channels to the graph
+            # This changes the feature dim from embedding_dim to embedding_dim + 2
+            # is_matched will be 1 for well-matched nodes, 0 otherwise
+            is_matched = np.zeros((num_std_steps, 1), dtype=np.float32)
+            similarity = np.zeros((num_std_steps, 1), dtype=np.float32)
+            
             for pair in matched_steps:
                 task_idx = pair['task_idx']
                 
@@ -190,8 +196,19 @@ def build_dataset(args):
                 # Forward pass: shape requires [1, args.embedding_dim]
                 fused_emb = fusion_model(task_emb.unsqueeze(0), visual_emb.unsqueeze(0))
                 
-                # Overwrite original embedding with fused embedding
-                node_features[task_idx] = fused_emb.cpu().squeeze().numpy()
+                # Calculate cosine similarity of the match
+                cos_sim = torch.nn.functional.cosine_similarity(task_emb.unsqueeze(0), visual_emb.unsqueeze(0)).item()
+                
+                # Only trust the match if the similarity is reasonable (> 0.0)
+                # Since the Hungarian matcher forces matches, bad matches get negative or near-zero similarity
+                if cos_sim > 0.0:
+                    # Overwrite original embedding with fused embedding
+                    node_features[task_idx] = fused_emb.cpu().squeeze().numpy()
+                    is_matched[task_idx, 0] = 1.0
+                    similarity[task_idx, 0] = cos_sim
+
+            # Append the explicit metadata to help the GNN generalize to new recipes
+            enhanced_features = np.concatenate([node_features, is_matched, similarity], axis=1)
 
         # Build PyG Graph
         # Ensure edges refer to valid bounds
@@ -213,7 +230,7 @@ def build_dataset(args):
         # Add self loops
         edge_index, _ = add_self_loops(edge_index, num_nodes=num_std_steps)
 
-        x_tensor = torch.tensor(node_features, dtype=torch.float32)
+        x_tensor = torch.tensor(enhanced_features, dtype=torch.float32)
         y_tensor = torch.tensor([label], dtype=torch.float)
 
         data = Data(
