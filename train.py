@@ -628,6 +628,9 @@ def train_and_evaluate_loo(args, device):
         # Store predictions for threshold tuning
         best_probs = None
         best_labels = None
+
+        # Store test metrics over the last 10 epochs
+        recent_test_metrics = []
         
         for epoch in range(1, args.num_epochs + 1):
             train_loss, train_acc = train_epoch(model, train_loader, optimizer, device, class_weights=class_weights)
@@ -648,14 +651,30 @@ def train_and_evaluate_loo(args, device):
                 best_threshold = threshold
             else:
                 patience_counter += 1
-                if patience_counter >= args.patience:
-                    break
+                # Still record test metrics before breaking
+            
+            # Record the test metrics for this epoch
+            _, test_acc_tmp, test_f1_tmp, test_auc_tmp, test_prec_tmp, test_rec_tmp, test_probs_tmp, test_labels_np_tmp = evaluate(
+                model, test_loader, device, threshold=best_threshold
+            )
+            
+            recent_test_metrics.append({
+                'acc': test_acc_tmp,
+                'f1': test_f1_tmp,
+                'auc': test_auc_tmp,
+                'prec': test_prec_tmp,
+                'rec': test_rec_tmp,
+                'threshold': best_threshold,
+                'probs': test_probs_tmp,
+                'labels': test_labels_np_tmp
+            })
+            if len(recent_test_metrics) > 10:
+                recent_test_metrics.pop(0)
+
+            if patience_counter >= args.patience:
+                break
             
             if epoch % 10 == 0 or epoch == 1:
-                # Evaluate on test set to show metrics during training
-                _, test_acc_tmp, test_f1_tmp, test_auc_tmp, _, _, _, _ = evaluate(
-                    model, test_loader, device, threshold=best_threshold
-                )
                 print(f""
                       f"  Epoch {epoch:03d}: "
                       f"Train Loss={train_loss:.4f}, Acc={train_eval_acc:.4f}, F1={train_eval_f1:.4f}, AUC={train_eval_auc:.4f} | "
@@ -670,10 +689,17 @@ def train_and_evaluate_loo(args, device):
                 'loo/best_threshold': best_threshold,
             }, step=global_step)
         
-        # Evaluate on test set using tuned threshold
-        test_loss, test_acc, test_f1, test_auc, test_prec, test_rec, test_probs, test_labels_np = evaluate(
-            model, test_loader, device, threshold=best_threshold
-        )
+        # Calculate the average from recent_test_metrics instead of final epoch call
+        test_acc = np.mean([m['acc'] for m in recent_test_metrics])
+        test_f1 = np.mean([m['f1'] for m in recent_test_metrics])
+        test_auc = np.mean([m['auc'] for m in recent_test_metrics])
+        test_prec = np.mean([m['prec'] for m in recent_test_metrics])
+        test_rec = np.mean([m['rec'] for m in recent_test_metrics])
+        best_threshold = np.mean([m['threshold'] for m in recent_test_metrics])
+        
+        # Use the latest actual predictions for W&B plotting
+        test_probs = recent_test_metrics[-1]['probs']
+        test_labels_np = recent_test_metrics[-1]['labels']
         
         # Save checkpoint for this recipe
         checkpoint_path = Path("results") / "checkpoints" / "loo" / f"{test_recipe}_best.pt"
