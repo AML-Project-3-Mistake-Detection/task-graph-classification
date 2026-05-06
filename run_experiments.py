@@ -132,7 +132,7 @@ for i, params in enumerate(combinations):
     ]
     
     if args.processed_graphs:
-        cmd.extend(["--processed_graphs", args.processed_graphs])
+        cmd.extend(["--data_path", args.processed_graphs])
     
     # Run command
     try:
