@@ -39,6 +39,8 @@ PROGRESS_PATH = RESULTS_DIR / "grid_progress.json"
 parser = argparse.ArgumentParser(description="Grid search for optimal hyperparameters")
 parser.add_argument('--mode', type=str, default='loo', choices=['loo', 'standard'],
                     help='Evaluation mode: loo (precise, ~6min/config), standard (fast, ~20s/config)')
+parser.add_argument('--processed_graphs', type=str, default=None,
+                    help='Path to a specific preprocessed graph file (e.g., data/processed_graphs.pt)')
 args = parser.parse_args()
 
 eval_mode = args.mode
@@ -128,6 +130,9 @@ for i, params in enumerate(combinations):
         "--num_epochs", "50",
         "--patience", "15"
     ]
+    
+    if args.processed_graphs:
+        cmd.extend(["--processed_graphs", args.processed_graphs])
     
     # Run command
     try:
