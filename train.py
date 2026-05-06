@@ -233,9 +233,9 @@ class PreloadedGraphDataset(Dataset):
     """
     Load preprocessed .pt files directly without complex initialization
     """
-    def __init__(self, pt_file_path, weights_only=False):
+    def __init__(self, pt_file_path, weights_only=False, device='cpu'):
         super().__init__()
-        self.data_list = torch.load(pt_file_path, weights_only=weights_only)
+        self.data_list = torch.load(pt_file_path, weights_only=weights_only, map_location=device)
     
     def len(self):
         return len(self.data_list)
@@ -362,7 +362,7 @@ def train_standard(args, device):
     
     # Load data
     print(f"\nLoading data from {args.data_path}...")
-    dataset = PreloadedGraphDataset(args.data_path, weights_only=False)
+    dataset = PreloadedGraphDataset(args.data_path, weights_only=False, device=device)
     
     sample = dataset[0]
     print(f"Dataset size: {len(dataset)}")
@@ -556,7 +556,7 @@ def train_and_evaluate_loo(args, device):
     print("="*70)
     
     # Load data
-    dataset = PreloadedGraphDataset(args.data_path, weights_only=False)
+    dataset = PreloadedGraphDataset(args.data_path, weights_only=False, device=device)
     print(f"\nTotal samples: {len(dataset)}")
     
     # Group by recipe (assumes data has task_name or recipe_id field)
