@@ -594,14 +594,24 @@ def train_and_evaluate_loo(args, device):
         train_dataset = torch.utils.data.Subset(dataset, train_indices)
         test_dataset = torch.utils.data.Subset(dataset, test_indices)
         
-        print(f"Train size: {len(train_dataset)} | Test size: {len(test_dataset)}")
+        # Split train_dataset into inner_train (80%) and inner_val (20%)
+        inner_train_size = int(0.8 * len(train_dataset))
+        inner_val_size = len(train_dataset) - inner_train_size
+        inner_train_dataset, inner_val_dataset = torch.utils.data.random_split(
+            train_dataset, [inner_train_size, inner_val_size],
+            generator=torch.Generator().manual_seed(args.seed)
+        )
+        
+        print(f"Inner Train size: {len(inner_train_dataset)} | Inner Val size: {len(inner_val_dataset)} | Test size: {len(test_dataset)}")
         
         # Create data loaders
-        train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True)
+        inner_train_loader = DataLoader(inner_train_dataset, batch_size=args.batch_size, shuffle=True)
+        inner_val_loader = DataLoader(inner_val_dataset, batch_size=args.batch_size, shuffle=False)
         test_loader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False)
         
-        # Compute class weights on training set
-        train_labels = np.array([dataset[i].y.item() for i in train_indices])
+        # Compute class weights on inner training set
+        inner_train_indices = [train_dataset.indices[i] for i in inner_train_dataset.indices]
+        train_labels = np.array([dataset[i].y.item() for i in inner_train_indices])
         class_weights = compute_class_weights(train_labels)
         class_weights = class_weights.to(device)
         
@@ -620,86 +630,71 @@ def train_and_evaluate_loo(args, device):
             weight_decay=args.weight_decay
         )
         
-        # Training loop with Best-by-F1
-        best_train_f1 = 0  # Now tracking best F1
-        best_threshold = 0.6
+        # Training loop with Best-by-F1 on inner validation set
+        best_val_f1 = 0
+        best_val_threshold = 0.6
+        best_val_probs = None
+        best_val_labels = None
+        best_epoch_num = 0
+        best_model_state = None
         patience_counter = 0
         
-        # Store predictions for threshold tuning
-        best_probs = None
-        best_labels = None
-
-        # Store test metrics over the last 10 epochs
-        recent_test_metrics = []
-        
         for epoch in range(1, args.num_epochs + 1):
-            train_loss, train_acc = train_epoch(model, train_loader, optimizer, device, class_weights=class_weights)
+            train_loss, train_acc = train_epoch(model, inner_train_loader, optimizer, device, class_weights=class_weights)
             
-            # Evaluate on training set to find best threshold
-            train_eval_loss, train_eval_acc, train_eval_f1, train_eval_auc, _, _, train_probs, train_labels_np = evaluate(
-                model, train_loader, device, threshold=None
+            # Evaluate on inner validation set
+            val_loss, val_acc, val_f1, val_auc, val_prec, val_rec, val_probs, val_labels = evaluate(
+                model, inner_val_loader, device, threshold=None
             )
             
-            if train_eval_f1 > best_train_f1:
-                best_train_f1 = train_eval_f1
-                best_probs = train_probs
-                best_labels = train_labels_np
+            # Track best inner validation F1
+            if val_f1 > best_val_f1:
+                best_val_f1 = val_f1
+                best_val_probs = val_probs
+                best_val_labels = val_labels
                 patience_counter = 0
+                best_epoch_num = epoch
                 
-                # Find best threshold on training set
-                threshold, threshold_f1 = find_best_threshold(train_labels_np, train_probs, metric='f1')
-                best_threshold = threshold
+                # Find best threshold on inner validation set
+                threshold, threshold_f1 = find_best_threshold(val_labels, val_probs, metric='f1')
+                best_val_threshold = threshold
+                
+                # Save best epoch weights
+                best_model_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
+                
+                if epoch % 10 == 0 or epoch == 1:
+                    print(f"  Epoch {epoch:03d}: "
+                          f"Train Loss={train_loss:.4f}, Acc={train_acc:.4f} | "
+                          f"Val Acc={val_acc:.4f}, F1={val_f1:.4f}, AUC={val_auc:.4f} "
+                          f"[✓ Best, Threshold={best_val_threshold:.3f}]")
             else:
                 patience_counter += 1
-                # Still record test metrics before breaking
+                if epoch % 10 == 0 or epoch == 1:
+                    print(f"  Epoch {epoch:03d}: "
+                          f"Train Loss={train_loss:.4f}, Acc={train_acc:.4f} | "
+                          f"Val Acc={val_acc:.4f}, F1={val_f1:.4f}, AUC={val_auc:.4f}")
             
-            # Record the test metrics for this epoch
-            _, test_acc_tmp, test_f1_tmp, test_auc_tmp, test_prec_tmp, test_rec_tmp, test_probs_tmp, test_labels_np_tmp = evaluate(
-                model, test_loader, device, threshold=best_threshold
-            )
-            
-            recent_test_metrics.append({
-                'acc': test_acc_tmp,
-                'f1': test_f1_tmp,
-                'auc': test_auc_tmp,
-                'prec': test_prec_tmp,
-                'rec': test_rec_tmp,
-                'threshold': best_threshold,
-                'probs': test_probs_tmp,
-                'labels': test_labels_np_tmp
-            })
-            if len(recent_test_metrics) > 10:
-                recent_test_metrics.pop(0)
-
             if patience_counter >= args.patience:
+                print(f"  Early stopping after {epoch} epochs (best epoch was {best_epoch_num})")
                 break
             
-            if epoch % 10 == 0 or epoch == 1:
-                print(f""
-                      f"  Epoch {epoch:03d}: "
-                      f"Train Loss={train_loss:.4f}, Acc={train_eval_acc:.4f}, F1={train_eval_f1:.4f}, AUC={train_eval_auc:.4f} | "
-                      f"Test Acc={test_acc_tmp:.4f}, F1={test_f1_tmp:.4f}, AUC={test_auc_tmp:.4f}")
-
             global_step = recipe_idx * args.num_epochs + epoch
             log_to_wandb({
                 'loo/train_loss': train_loss,
                 'loo/train_acc': train_acc,
-                'loo/train_eval_f1': train_eval_f1,
-                'loo/train_eval_auc': train_eval_auc,
-                'loo/best_threshold': best_threshold,
+                'loo/val_f1': val_f1,
+                'loo/val_auc': val_auc,
+                'loo/val_threshold': best_val_threshold,
             }, step=global_step)
         
-        # Calculate the average from recent_test_metrics instead of final epoch call
-        test_acc = np.mean([m['acc'] for m in recent_test_metrics])
-        test_f1 = np.mean([m['f1'] for m in recent_test_metrics])
-        test_auc = np.mean([m['auc'] for m in recent_test_metrics])
-        test_prec = np.mean([m['prec'] for m in recent_test_metrics])
-        test_rec = np.mean([m['rec'] for m in recent_test_metrics])
-        best_threshold = np.mean([m['threshold'] for m in recent_test_metrics])
+        # Restore best epoch weights
+        if best_model_state is not None:
+            model.load_state_dict({k: v.to(device) for k, v in best_model_state.items()})
         
-        # Use the latest actual predictions for W&B plotting
-        test_probs = recent_test_metrics[-1]['probs']
-        test_labels_np = recent_test_metrics[-1]['labels']
+        # Evaluate on test set (once, with best epoch and best threshold)
+        test_loss, test_acc, test_f1, test_auc, test_prec, test_rec, test_probs, test_labels_np = evaluate(
+            model, test_loader, device, threshold=best_val_threshold
+        )
         
         # Save checkpoint for this recipe
         checkpoint_path = Path("results") / "checkpoints" / "loo" / f"{test_recipe}_best.pt"
@@ -707,10 +702,12 @@ def train_and_evaluate_loo(args, device):
             model,
             checkpoint_path,
             test_recipe=test_recipe,
+            best_epoch=best_epoch_num,
+            val_f1=best_val_f1,
             test_acc=test_acc,
             test_f1=test_f1,
             test_auc=test_auc,
-            best_threshold=best_threshold,
+            best_threshold=best_val_threshold,
             model_config={
                 'model_type': args.model_type,
                 'in_channels': in_channels,
@@ -724,8 +721,9 @@ def train_and_evaluate_loo(args, device):
             }
         )
         
-        print(f"\n  Test Results for {test_recipe} (Threshold: {best_threshold:.3f}):")
-        print(f"    Acc={test_acc:.4f}, F1={test_f1:.4f}, AUC={test_auc:.4f}")
+        print(f"\n  Test Results for {test_recipe}:")
+        print(f"    Best inner-val epoch: {best_epoch_num} (Val F1={best_val_f1:.4f}, Threshold={best_val_threshold:.3f})")
+        print(f"    Test Acc={test_acc:.4f}, F1={test_f1:.4f}, AUC={test_auc:.4f}")
         print(f"    Precision={test_prec:.4f}, Recall={test_rec:.4f}")
 
         log_to_wandb({
@@ -734,7 +732,7 @@ def train_and_evaluate_loo(args, device):
             'loo_test/auc': test_auc,
             'loo_test/precision': test_prec,
             'loo_test/recall': test_rec,
-            'loo_test/threshold': best_threshold,
+            'loo_test/threshold': best_val_threshold,
         })
 
         safe_recipe = str(test_recipe).replace('/', '_').replace(' ', '_')
@@ -747,7 +745,7 @@ def train_and_evaluate_loo(args, device):
             'auc': test_auc,
             'precision': test_prec,
             'recall': test_rec,
-            'threshold': best_threshold
+            'threshold': best_val_threshold
         })
     
     # Summarize results
