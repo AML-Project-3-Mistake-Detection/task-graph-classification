@@ -35,7 +35,7 @@ wandb/
 
 # Data - ignore all except processed_graphs.pt
 data/*
-!data/processed_graphs.pt
+!data/*.pt
 
 results/*
 !results/checkpoints/
