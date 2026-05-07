@@ -26,6 +26,8 @@ from sklearn.metrics import (
     roc_curve,
     precision_recall_curve,
 )
+from sklearn.model_selection import StratifiedShuffleSplit
+from sklearn.linear_model import LogisticRegression
 
 from models.dagnn import DAGNN, GCNClassifier
 
@@ -597,21 +599,35 @@ def train_and_evaluate_loo(args, device):
         # Split train_dataset into inner_train (80%) and inner_val (20%)
         inner_train_size = int(0.8 * len(train_dataset))
         inner_val_size = len(train_dataset) - inner_train_size
-        inner_train_dataset, inner_val_dataset = torch.utils.data.random_split(
-            train_dataset, [inner_train_size, inner_val_size],
-            generator=torch.Generator().manual_seed(args.seed)
-        )
-        
-        print(f"Inner Train size: {len(inner_train_dataset)} | Inner Val size: {len(inner_val_dataset)} | Test size: {len(test_dataset)}")
-        
+
+        # Prepare labels for stratification (use global indices in train_indices)
+        train_labels_all = np.array([dataset[i].y.item() for i in train_indices])
+
+        try:
+            sss = StratifiedShuffleSplit(n_splits=1, test_size=inner_val_size, random_state=args.seed)
+            rel_train_idx, rel_val_idx = next(sss.split(np.zeros(len(train_indices)), train_labels_all))
+            inner_train_idx = [train_indices[i] for i in rel_train_idx]
+            inner_val_idx = [train_indices[i] for i in rel_val_idx]
+
+            inner_train_dataset = torch.utils.data.Subset(dataset, inner_train_idx)
+            inner_val_dataset = torch.utils.data.Subset(dataset, inner_val_idx)
+            print(f"Inner Train size (stratified): {len(inner_train_dataset)} | Inner Val size: {len(inner_val_dataset)} | Test size: {len(test_dataset)}")
+        except Exception:
+            # Fallback to random split if stratification fails (e.g. too few samples of a class)
+            inner_train_dataset, inner_val_dataset = torch.utils.data.random_split(
+                train_dataset, [inner_train_size, inner_val_size],
+                generator=torch.Generator().manual_seed(args.seed)
+            )
+            print(f"Inner Train size (random fallback): {len(inner_train_dataset)} | Inner Val size: {len(inner_val_dataset)} | Test size: {len(test_dataset)}")
+
         # Create data loaders
         inner_train_loader = DataLoader(inner_train_dataset, batch_size=args.batch_size, shuffle=True)
         inner_val_loader = DataLoader(inner_val_dataset, batch_size=args.batch_size, shuffle=False)
         test_loader = DataLoader(test_dataset, batch_size=args.batch_size, shuffle=False)
-        
-        # Compute class weights on inner training set
-        inner_train_indices = [train_dataset.indices[i] for i in inner_train_dataset.indices]
-        train_labels = np.array([dataset[i].y.item() for i in inner_train_indices])
+
+        # Compute class weights on inner training set (absolute indices)
+        inner_train_abs_indices = [idx for idx in (inner_train_dataset.indices if hasattr(inner_train_dataset, 'indices') else [i for i in inner_train_idx])]
+        train_labels = np.array([dataset[i].y.item() for i in inner_train_abs_indices])
         class_weights = compute_class_weights(train_labels)
         class_weights = class_weights.to(device)
         
@@ -630,71 +646,91 @@ def train_and_evaluate_loo(args, device):
             weight_decay=args.weight_decay
         )
         
-        # Training loop with Best-by-F1 on inner validation set
-        best_val_f1 = 0
-        best_val_threshold = 0.6
+        # Training loop with Best-by-AUC on inner validation set (threshold-free selection)
+        best_val_auc = float('-inf')
         best_val_probs = None
         best_val_labels = None
         best_epoch_num = 0
         best_model_state = None
         patience_counter = 0
-        
+
         for epoch in range(1, args.num_epochs + 1):
             train_loss, train_acc = train_epoch(model, inner_train_loader, optimizer, device, class_weights=class_weights)
-            
+
             # Evaluate on inner validation set
             val_loss, val_acc, val_f1, val_auc, val_prec, val_rec, val_probs, val_labels = evaluate(
                 model, inner_val_loader, device, threshold=None
             )
-            
-            # Track best inner validation F1
-            if val_f1 > best_val_f1:
-                best_val_f1 = val_f1
+
+            # Track best inner validation AUC (threshold-free)
+            if val_auc > best_val_auc:
+                best_val_auc = val_auc
                 best_val_probs = val_probs
                 best_val_labels = val_labels
                 patience_counter = 0
                 best_epoch_num = epoch
-                
-                # Find best threshold on inner validation set
-                threshold, threshold_f1 = find_best_threshold(val_labels, val_probs, metric='f1')
-                best_val_threshold = threshold
-                
+
                 # Save best epoch weights
                 best_model_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
-                
+
                 if epoch % 10 == 0 or epoch == 1:
                     print(f"  Epoch {epoch:03d}: "
                           f"Train Loss={train_loss:.4f}, Acc={train_acc:.4f} | "
                           f"Val Acc={val_acc:.4f}, F1={val_f1:.4f}, AUC={val_auc:.4f} "
-                          f"[✓ Best, Threshold={best_val_threshold:.3f}]")
+                          f"[✓ Best by AUC]")
             else:
                 patience_counter += 1
                 if epoch % 10 == 0 or epoch == 1:
                     print(f"  Epoch {epoch:03d}: "
                           f"Train Loss={train_loss:.4f}, Acc={train_acc:.4f} | "
                           f"Val Acc={val_acc:.4f}, F1={val_f1:.4f}, AUC={val_auc:.4f}")
-            
+
             if patience_counter >= args.patience:
                 print(f"  Early stopping after {epoch} epochs (best epoch was {best_epoch_num})")
                 break
-            
+
             global_step = recipe_idx * args.num_epochs + epoch
             log_to_wandb({
                 'loo/train_loss': train_loss,
                 'loo/train_acc': train_acc,
                 'loo/val_f1': val_f1,
                 'loo/val_auc': val_auc,
-                'loo/val_threshold': best_val_threshold,
             }, step=global_step)
-        
+
         # Restore best epoch weights
         if best_model_state is not None:
             model.load_state_dict({k: v.to(device) for k, v in best_model_state.items()})
-        
-        # Evaluate on test set (once, with best epoch and best threshold)
-        test_loss, test_acc, test_f1, test_auc, test_prec, test_rec, test_probs, test_labels_np = evaluate(
-            model, test_loader, device, threshold=best_val_threshold
-        )
+
+        # Evaluate on test set (once) to obtain raw probs
+        test_loss, _, _, _, _, _, test_probs, test_labels_np = evaluate(model, test_loader, device, threshold=None)
+
+        # Calibrate probabilities using logistic regression (Platt scaling) on best inner-val
+        best_val_probs_arr = np.array(best_val_probs).reshape(-1, 1)
+        best_val_labels_arr = np.array(best_val_labels)
+
+        try:
+            calibrator = LogisticRegression(solver='lbfgs')
+            calibrator.fit(best_val_probs_arr, best_val_labels_arr)
+            val_probs_cal = calibrator.predict_proba(best_val_probs_arr)[:, 1]
+            test_probs_cal = calibrator.predict_proba(np.array(test_probs).reshape(-1, 1))[:, 1]
+        except Exception:
+            # Fallback: no calibration
+            val_probs_cal = np.array(best_val_probs)
+            test_probs_cal = np.array(test_probs)
+
+        # Find best threshold on calibrated inner-val probs
+        best_threshold, best_thr_f1 = find_best_threshold(best_val_labels_arr, val_probs_cal, metric='f1')
+
+        # Compute final test metrics using calibrated probabilities and selected threshold
+        test_pred = (test_probs_cal >= best_threshold).astype(int)
+        test_acc = np.mean(test_pred == np.array(test_labels_np))
+        test_f1 = f1_score(test_labels_np, test_pred, average='macro', zero_division=0)
+        test_prec = precision_score(test_labels_np, test_pred, average='macro', zero_division=0)
+        test_rec = recall_score(test_labels_np, test_pred, average='macro', zero_division=0)
+        try:
+            test_auc = roc_auc_score(test_labels_np, test_probs_cal)
+        except Exception:
+            test_auc = 0.5
         
         # Save checkpoint for this recipe
         checkpoint_path = Path("results") / "checkpoints" / "loo" / f"{test_recipe}_best.pt"
