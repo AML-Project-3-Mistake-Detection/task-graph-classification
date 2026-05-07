@@ -145,9 +145,12 @@ def build_dataset(args):
     with open(args.task_metadata, 'r') as f:
         tg_meta = json.load(f)
         
-    # 4. Load Fusion Model
-    print("[4/4] Loading trained fusion model...")
-    fusion_model = load_fusion_model(args.fusion_model, args.device, default_dim=args.embedding_dim)
+    # 4. Use Identity Fusion (simple average) for full-dim
+    class IdentityFusion(nn.Module):
+        def forward(self, task_features, visual_features):
+            return (task_features + visual_features) / 2
+            
+    fusion_model = IdentityFusion().to(args.device)
 
     all_graphs = []
     
