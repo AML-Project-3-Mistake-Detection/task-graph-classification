@@ -739,11 +739,11 @@ def train_and_evaluate_loo(args, device):
             checkpoint_path,
             test_recipe=test_recipe,
             best_epoch=best_epoch_num,
-            val_f1=best_val_f1,
+            val_f1=best_thr_f1,
             test_acc=test_acc,
             test_f1=test_f1,
             test_auc=test_auc,
-            best_threshold=best_val_threshold,
+            best_threshold=best_threshold,
             model_config={
                 'model_type': args.model_type,
                 'in_channels': in_channels,
