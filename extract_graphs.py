@@ -133,7 +133,7 @@ def build_dataset(args):
         err_ann = json.load(f)
     rec_to_label = {}
     for entry in err_ann:
-        rec_to_label[entry['recording_id']] = 0 if entry['is_error'] else 1
+        rec_to_label[entry['recording_id']] = 1 if entry['is_error'] else 0
     print(f"✓ Loaded {len(rec_to_label)} true labels")
 
     # 2. Load task graph embeddings (Base nodes)
@@ -162,7 +162,7 @@ def build_dataset(args):
         if recording_id in rec_to_label:
             label = rec_to_label[recording_id]
         else:
-            label = matched_steps[0].get('video_label', 1)
+            label = matched_steps[0].get('video_label', 0)
         
         # Make sure task base data exists
         if task_name not in tg_data.files or task_name not in tg_meta:

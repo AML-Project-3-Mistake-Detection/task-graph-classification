@@ -77,8 +77,8 @@ def plot_confusion_matrix(cm, save_path=None):
     """Plot confusion matrix."""
     plt.figure(figsize=(8, 6))
     sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', 
-                xticklabels=['Incorrect', 'Correct'],
-                yticklabels=['Incorrect', 'Correct'])
+                xticklabels=['Normal', 'Error'],
+                yticklabels=['Normal', 'Error'])
     plt.ylabel('True Label')
     plt.xlabel('Predicted Label')
     plt.title('Confusion Matrix')

@@ -298,7 +298,7 @@ def evaluate(model, loader, device, threshold=None):
     Evaluate model with full metrics (Acc, F1, AUC, Precision, Recall)
     
     Args:
-        threshold: If provided, use this threshold instead of 0.6 for binary classification
+        threshold: If provided, use this threshold instead of 0.5 for binary classification
     """
     model.eval()
     total_loss = 0
@@ -319,8 +319,8 @@ def evaluate(model, loader, device, threshold=None):
         # Get probabilities (Class 1) and predicted classes
         probs = torch.softmax(out, dim=1)[:, 1]
         
-        # Use custom threshold if provided, else default to 0.6
-        current_threshold = threshold if threshold is not None else 0.6
+        # Use custom threshold if provided, else default to 0.5
+        current_threshold = threshold if threshold is not None else 0.5
         preds = (probs >= current_threshold).long()
         
         # Collect data (convert to numpy)
@@ -352,13 +352,13 @@ def train_standard(args, device):
     """
     Standard train/val split (80/20) training with:
     - Class weights for imbalanced data
-    - Best-by-F1 checkpoint saving
+    - Best-by-AUC checkpoint saving (threshold-independent)
     - Threshold tuning on validation set
     """
     print("\n" + "="*70)
     print("Standard Training (80/20 split) with Improvements")
     print("  - Class Weights: YES (handles imbalanced data)")
-    print("  - Best-by-F1: YES (saves best F1 model)")
+    print("  - Best-by-AUC: YES (saves best generalizable model)")
     print("  - Threshold Tuning: YES (optimizes on validation set)")
     print("="*70)
     
@@ -417,23 +417,23 @@ def train_standard(args, device):
     
     # Training loop
     print("\nStarting training...")
-    best_val_f1 = 0  # Now tracking best F1 instead of best Acc
+    best_val_auc = 0  # Now tracking best AUC instead of F1
+    best_val_f1 = 0
     best_val_acc = 0
-    best_val_auc = 0
-    best_threshold = 0.6  # Store best threshold
+    best_threshold = 0.5  # Store best threshold
     patience_counter = 0
     
     for epoch in range(1, args.num_epochs + 1):
         train_loss, train_acc = train_epoch(model, train_loader, optimizer, device, class_weights=class_weights)
         
-        # Evaluate on validation set with default threshold
+        # Evaluate on validation set with default threshold (0.5)
         val_loss, val_acc, val_f1, val_auc, val_prec, val_rec, val_probs, val_labels = evaluate(
             model, val_loader, device, threshold=None
         )
         
         print(f"Epoch {epoch:03d}: "
               f"Train Loss: {train_loss:.4f}, Acc: {train_acc:.4f} | "
-              f"Val Loss: {val_loss:.4f}, Acc: {val_acc:.4f}, F1: {val_f1:.4f}, AUC: {val_auc:.4f}")
+              f"Val Loss: {val_loss:.4f}, Acc: {val_acc:.4f}, AUC: {val_auc:.4f}, F1: {val_f1:.4f}")
 
         log_to_wandb({
             'train/loss': train_loss,
@@ -446,24 +446,23 @@ def train_standard(args, device):
             'val/recall': val_rec,
         }, step=epoch)
         
-        # IMPROVEMENT 1 & 2: Save best model based on F1 (not Acc)
-        # Also tune threshold on validation set
-        if val_f1 > best_val_f1:
+        # IMPROVEMENT: Save best model based on AUC (threshold-independent)
+        if val_auc > best_val_auc:
+            best_val_auc = val_auc
             best_val_f1 = val_f1
             best_val_acc = val_acc
-            best_val_auc = val_auc
             patience_counter = 0
             
-            # IMPROVEMENT 3: Find best threshold on validation set
+            # Find best threshold on validation set for reporting
             threshold, threshold_f1 = find_best_threshold(val_labels, val_probs, metric='f1')
             best_threshold = threshold
             
-            print(f"  ✓ New best F1! Threshold: {best_threshold:.3f} (tuned F1: {threshold_f1:.4f})")
+            print(f"  ✓ New best AUC! Tuned Threshold: {best_threshold:.3f} (Val F1@thr: {threshold_f1:.4f})")
 
             log_to_wandb({
+                'best/val_auc': best_val_auc,
                 'best/val_f1': best_val_f1,
                 'best/val_acc': best_val_acc,
-                'best/val_auc': best_val_auc,
                 'best/threshold': best_threshold,
                 'best/tuned_val_f1': threshold_f1,
             }, step=epoch)
