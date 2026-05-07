@@ -758,7 +758,7 @@ def train_and_evaluate_loo(args, device):
         )
         
         print(f"\n  Test Results for {test_recipe}:")
-        print(f"    Best inner-val epoch: {best_epoch_num} (Val F1={best_val_f1:.4f}, Threshold={best_val_threshold:.3f})")
+        print(f"    Best inner-val epoch: {best_epoch_num} (Val AUC={best_val_auc:.4f}, Threshold={best_threshold:.3f}, ValF1@thr={best_thr_f1:.4f})")
         print(f"    Test Acc={test_acc:.4f}, F1={test_f1:.4f}, AUC={test_auc:.4f}")
         print(f"    Precision={test_prec:.4f}, Recall={test_rec:.4f}")
 
@@ -768,7 +768,7 @@ def train_and_evaluate_loo(args, device):
             'loo_test/auc': test_auc,
             'loo_test/precision': test_prec,
             'loo_test/recall': test_rec,
-            'loo_test/threshold': best_val_threshold,
+            'loo_test/threshold': best_threshold,
         })
 
         safe_recipe = str(test_recipe).replace('/', '_').replace(' ', '_')
@@ -781,7 +781,7 @@ def train_and_evaluate_loo(args, device):
             'auc': test_auc,
             'precision': test_prec,
             'recall': test_rec,
-            'threshold': best_val_threshold
+            'threshold': best_threshold
         })
     
     # Summarize results
