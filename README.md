@@ -157,32 +157,32 @@ Each node has **258 dimensions**:
 
 ### Step 1: Extract Graphs
 
-Convert Extension 3 outputs to PyTorch Geometric Data objects:
+Convert the Joint PCA aligned features and matched pairs to PyTorch Geometric Data objects:
 
 ```bash
-# Basic usage (uses default paths)
-python extract_graphs.py
-
-# Custom paths
+# Basic usage (uses Joint PCA data)
 python extract_graphs.py \
     --matched_pairs data/extension3_outputs/matched_features/matched_pairs.json \
     --task_embeddings data/extension3_outputs/task_graph_encodings/task_graph_embeddings.npz \
-    --metadata data/extension3_outputs/task_graph_encodings/task_graph_metadata.json \
-    --fusion_checkpoint data/extension3_outputs/fusion_model/best_fusion_model.pth \
-    --output data/processed_graphs.pt \
-    --device cuda  # or 'cpu'
+    --task_metadata data/extension3_outputs/task_graph_encodings/task_graph_metadata.json \
+    --fusion_model data/extension3_outputs/fusion_model/best_fusion_model.pth \
+    --output data/processed_graphs_joint_pca.pt \
+    --embedding_dim 32
+
+# Note: The data path defaults in train.py and evaluate.py are now set to data/processed_graphs_joint_pca.pt
 ```
 
-**Output**: `data/processed_graphs.pt` (384 graphs ready for training)
+**Output**: `data/processed_graphs_joint_pca.pt` (384 graphs ready for training)
 
 ### Step 2: Train Model
 
 ```bash
-# Leave-One-Recipe-Out (LOO) cross-validation
+# Leave-One-Recipe-Out (LOO) cross-validation (Recommended for small datasets)
 python train.py --eval_mode loo --model_type dagnn --num_epochs 50 --device cuda
 
 # Standard train/val split (80/20)
 python train.py --eval_mode standard --model_type dagnn --num_epochs 100 --device cuda
+```
 
 # With custom hyperparameters
 python train.py \

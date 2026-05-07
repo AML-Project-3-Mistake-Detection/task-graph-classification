@@ -178,47 +178,50 @@ def build_dataset(args):
         # Update matched nodes with fused features
         with torch.no_grad():
             # Add explicit step-matching metadata channels to the graph
-            # This changes the feature dim from embedding_dim to embedding_dim + 2
-            # is_matched will be 1 for well-matched nodes, 0 otherwise
             is_matched = np.zeros((num_std_steps, 1), dtype=np.float32)
             similarity = np.zeros((num_std_steps, 1), dtype=np.float32)
             
+            # Keep track of matched indices to zero out others
+            matched_indices = set()
+
             for pair in matched_steps:
                 task_idx = pair['task_idx']
-                
-                # Check valid index bounds
                 if task_idx < 0 or task_idx >= num_std_steps:
                     continue
                     
                 task_emb = torch.tensor(pair['task_embedding'], dtype=torch.float32).to(args.device)
                 visual_emb = torch.tensor(pair['visual_embedding'], dtype=torch.float32).to(args.device)
                 
-                # Forward pass: shape requires [1, args.embedding_dim]
-                fused_emb = fusion_model(task_emb.unsqueeze(0), visual_emb.unsqueeze(0))
-                
-                # Calculate cosine similarity of the match
                 cos_sim = torch.nn.functional.cosine_similarity(task_emb.unsqueeze(0), visual_emb.unsqueeze(0)).item()
                 
-                # Only trust the match if the similarity is reasonable (> 0.0)
-                # Since the Hungarian matcher forces matches, bad matches get negative or near-zero similarity
-                if cos_sim > 0.0:
-                    # Overwrite original embedding with fused embedding
+                # RELAXED THRESHOLD: -1.0 to include all matches
+                if cos_sim > -1.0:
+                    fused_emb = fusion_model(task_emb.unsqueeze(0), visual_emb.unsqueeze(0))
                     node_features[task_idx] = fused_emb.cpu().squeeze().numpy()
                     is_matched[task_idx, 0] = 1.0
                     similarity[task_idx, 0] = cos_sim
+                    matched_indices.add(task_idx)
 
-            # Append the explicit metadata to help the GNN generalize to new recipes
+            # ZERO OUT UNMATCHED NODES: Force the GNN to see 'holes' in the recipe
+            for i in range(num_std_steps):
+                if i not in matched_indices:
+                    node_features[i] = 0.0
+
+            # Calculate Global Graph Features to help with counting
+            completion_rate = len(matched_indices) / num_std_steps
+            avg_similarity = np.mean(similarity) if len(matched_indices) > 0 else 0.0
+            
+            # Append similarity and is_matched to node features
             enhanced_features = np.concatenate([node_features, is_matched, similarity], axis=1)
 
         # Build PyG Graph
-        # Ensure edges refer to valid bounds
+        # ... standard edge construction code ...
         valid_edges = []
         for src, dst in standard_edges:
             s, d = int(src), int(dst)
             if 0 <= s < num_std_steps and 0 <= d < num_std_steps:
                 valid_edges.append([s, d])
         
-        # Fallback to sequential edges if empty
         if not valid_edges:
             valid_edges = [[i, i+1] for i in range(num_std_steps - 1)]
 
@@ -227,7 +230,6 @@ def build_dataset(args):
         else:
             edge_index = torch.zeros((2, 0), dtype=torch.long)
             
-        # Add self loops
         edge_index, _ = add_self_loops(edge_index, num_nodes=num_std_steps)
 
         x_tensor = torch.tensor(enhanced_features, dtype=torch.float32)
@@ -238,7 +240,10 @@ def build_dataset(args):
             edge_index=edge_index,
             y=y_tensor,
             recording_id=recording_id,
-            task_name=task_name
+            task_name=task_name,
+            # ADD GLOBAL FEATURES
+            completion_rate=torch.tensor([completion_rate], dtype=torch.float32),
+            avg_similarity=torch.tensor([avg_similarity], dtype=torch.float32)
         )
         all_graphs.append(data)
 

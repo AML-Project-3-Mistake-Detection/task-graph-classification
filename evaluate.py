@@ -267,7 +267,7 @@ if __name__ == "__main__":
     parser.add_argument(
         '--data_path',
         type=str,
-        default='data/processed_graphs.pt',
+        default='data/processed_graphs_joint_pca.pt',
         help='Path to preprocessed graphs'
     )
     parser.add_argument(
