@@ -429,9 +429,11 @@ def train_standard(args, device):
             model, val_loader, device, threshold=None
         )
         
-        print(f"Epoch {epoch:03d}: "
-              f"Train Loss: {train_loss:.4f}, Acc: {train_acc:.4f} | "
-              f"Val Loss: {val_loss:.4f}, Acc: {val_acc:.4f}, F1: {val_f1:.4f}, AUC: {val_auc:.4f}")
+        # Print every 10 epochs
+        if epoch % 10 == 0 or epoch == 1:
+            print(f"Epoch {epoch:03d}: "
+                  f"Train Acc: {train_acc:.4f} | "
+                  f"Test Acc: {val_acc:.4f}, F1: {val_f1:.4f}, AUC: {val_auc:.4f}")
 
         log_to_wandb({
             'train/loss': train_loss,
