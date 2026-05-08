@@ -166,6 +166,7 @@ class GCNClassifier(nn.Module):
         
         from torch_geometric.nn import GCNConv, global_mean_pool
         
+        self.feature_norm = nn.LayerNorm(in_channels)
         self.convs = nn.ModuleList()
         self.convs.append(GCNConv(in_channels, hidden_channels))
         
@@ -177,6 +178,7 @@ class GCNClassifier(nn.Module):
         self.global_pool = global_mean_pool
     
     def forward(self, x, edge_index, batch):
+        x = self.feature_norm(x)
         for conv in self.convs:
             x = conv(x, edge_index)
             x = F.relu(x)
