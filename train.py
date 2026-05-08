@@ -654,7 +654,11 @@ def train_and_evaluate_loo(args, device):
                     break
             
             if epoch % 10 == 0 or epoch == 1:
-                print(f"  Epoch {epoch:03d}: Train Loss={train_loss:.4f}, Acc={train_acc:.4f}, F1={train_eval_f1:.4f}")
+                # Evaluate on test set for monitoring
+                test_loss, test_acc, test_f1, test_auc, _, _, _, _ = evaluate(
+                    model, test_loader, device, threshold=None
+                )
+                print(f"  Epoch {epoch:03d}: Train Acc={train_acc:.4f}, F1={train_eval_f1:.4f} | Test Acc={test_acc:.4f}, F1={test_f1:.4f}, AUC={test_auc:.4f}")
 
             global_step = recipe_idx * args.num_epochs + epoch
             log_to_wandb({
