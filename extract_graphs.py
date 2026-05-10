@@ -10,10 +10,10 @@ This script generates PyG Data objects (one per recording) by:
 
 Usage:
     python extract_graphs.py \
-    --matched_pairs data/extension3_outputs/matched_features/matched_pairs.json \
-    --task_embeddings data/extension3_outputs/task_graph_encodings/task_graph_embeddings.npz \
-    --task_metadata data/extension3_outputs/task_graph_encodings/task_graph_metadata.json \
-    --fusion_model data/extension3_outputs/fusion_model/best_fusion_model.pth \
+    --matched_pairs data/matched_features/matched_pairs.json \
+    --task_embeddings data/task_graph_encodings_256/task_graph_embeddings.npz \
+    --task_metadata data/task_graph_encodings_256/task_graph_metadata.json \
+    --fusion_model data/fusion_model/best_fusion_model.pth \
     --output data/processed_graphs.pt
 """
 
@@ -75,31 +75,49 @@ class FeatureFusionModule(nn.Module):
         return fused
 
 
-def load_fusion_model(checkpoint_path: str, device: str) -> FeatureFusionModule:
-    """Load fusion model from checkpoint."""
+def load_fusion_model(
+    checkpoint_path: str,
+    device: str,
+    fusion_type: str = 'gated',
+    output_dim: int = 256,
+) -> FeatureFusionModule:
+    """Load fusion model from checkpoint.
+
+    Behavior:
+    - If checkpoint contains `fusion_type` or `output_dim` keys, those values
+      will be preferred. Otherwise the provided `fusion_type` and
+      `output_dim` arguments are used to construct the module.
+    - If checkpoint is a raw state_dict, the constructed module will attempt
+      to load it. If loading fails, the raw checkpoint object is returned.
+    """
     checkpoint = torch.load(checkpoint_path, map_location=device)
-    
+
     if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
         state_dict = checkpoint['model_state_dict']
         embedding_dim = checkpoint.get('embedding_dim', 256)
-        fusion_type = checkpoint.get('fusion_type', 'concat')
+        # Prefer checkpoint-stored fusion_type/output_dim, fall back to args
+        ckpt_fusion_type = checkpoint.get('fusion_type', fusion_type)
+        ckpt_output_dim = checkpoint.get('output_dim', output_dim)
         hidden_dim = checkpoint.get('hidden_dim', 512)
-        output_dim = checkpoint.get('output_dim', 256)
-        
+
         model = FeatureFusionModule(
             embedding_dim=embedding_dim,
             hidden_dim=hidden_dim,
-            output_dim=output_dim,
-            fusion_type=fusion_type
+            output_dim=ckpt_output_dim,
+            fusion_type=ckpt_fusion_type,
         )
         model.load_state_dict(state_dict)
     else:
-        model = FeatureFusionModule(fusion_type='concat')
+        # Construct with requested output_dim and fusion_type
+        model = FeatureFusionModule(fusion_type=fusion_type, output_dim=output_dim)
         if isinstance(checkpoint, dict):
-            model.load_state_dict(checkpoint)
+            try:
+                model.load_state_dict(checkpoint)
+            except Exception:
+                model = checkpoint
         else:
             model = checkpoint
-    
+
     model.to(device).eval()
     return model
 
@@ -111,13 +129,38 @@ def build_dataset(args):
     # 1. Load matched pairs
     print("[1/4] Loading matched pairs...")
     with open(args.matched_pairs, 'r') as f:
-        pairs = json.load(f)
+        data = json.load(f)
+    
+    # Handle different JSON structures
+    if isinstance(data, dict):
+        # If it's a dict, check if it has a 'pairs' key or if keys are recording IDs
+        if 'pairs' in data:
+            pairs = data['pairs']
+        elif 'matches' in data:
+            pairs = data['matches']
+        else:
+            # Assume it's keyed by recording_id; convert to list format
+            pairs = []
+            for recording_id, pair_list in data.items():
+                if isinstance(pair_list, list):
+                    pairs.extend(pair_list)
+                else:
+                    # Single pair per recording
+                    pair_list['recording_id'] = recording_id
+                    pairs.append(pair_list)
+    else:
+        # It's already a list
+        pairs = data
+    
     print(f"✓ Loaded {len(pairs)} matched pairs")
 
     recording_to_pairs = defaultdict(list)
     for pair in pairs:
-        recording_to_pairs[pair['recording_id']].append(pair)
-    print("✓ Found {len(recording_to_pairs)} unique recordings")
+        if isinstance(pair, dict) and 'recording_id' in pair:
+            recording_to_pairs[pair['recording_id']].append(pair)
+        else:
+            print(f"⚠ Skipping invalid pair: {pair}")
+    print(f"✓ Found {len(recording_to_pairs)} unique recordings")
 
     # 1.5 Load true labels from original annotations
     print("[1.5/4] Loading true labels from original annotations...")
@@ -138,8 +181,17 @@ def build_dataset(args):
         tg_meta = json.load(f)
         
     # 4. Load Fusion Model
-    print("[4/4] Loading trained fusion model...")
-    fusion_model = load_fusion_model(args.fusion_model, args.device)
+    if args.fusion_model:
+        print("[4/4] Loading trained fusion model...")
+        fusion_model = load_fusion_model(
+            args.fusion_model,
+            args.device,
+            fusion_type=args.fusion_type,
+            output_dim=args.fusion_output_dim,
+        )
+    else:
+        print("[4/4] No fusion model provided. Using base features.")
+        fusion_model = None
 
     all_graphs = []
     
@@ -250,6 +302,19 @@ if __name__ == '__main__':
         type=str,
         default='data/extension3_outputs/fusion_model/best_fusion_model.pth',
         help='Path to pretrained visual-text best_fusion_model.pth'
+    )
+    parser.add_argument(
+        '--fusion_type',
+        type=str,
+        default='gated',
+        choices=['concat', 'gated'],
+        help='Fusion strategy to use when fusing task and visual embeddings (default: gated)'
+    )
+    parser.add_argument(
+        '--fusion_output_dim',
+        type=int,
+        default=256,
+        help='Output embedding dimension of the fusion module (default: 256)'
     )
     parser.add_argument(
         '--output',
