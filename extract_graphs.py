@@ -75,6 +75,20 @@ class FeatureFusionModule(nn.Module):
         return fused
 
 
+def _detect_fusion_type_from_state_dict(state_dict: dict) -> str:
+    """Detect fusion type from state_dict keys."""
+    state_keys = set(state_dict.keys())
+    
+    if any('gate' in k for k in state_keys):
+        return 'gated'
+    elif any('query_proj' in k for k in state_keys):
+        return 'cross_attention'
+    elif any('fusion' in k for k in state_keys):
+        return 'concat'
+    else:
+        return 'gated'  # default fallback
+
+
 def load_fusion_model(
     checkpoint_path: str,
     device: str,
@@ -87,16 +101,20 @@ def load_fusion_model(
     - If checkpoint contains `fusion_type` or `output_dim` keys, those values
       will be preferred. Otherwise the provided `fusion_type` and
       `output_dim` arguments are used to construct the module.
-    - If checkpoint is a raw state_dict, the constructed module will attempt
-      to load it. If loading fails, the raw checkpoint object is returned.
+    - If checkpoint is a raw state_dict, automatically detects the fusion type
+      from the state_dict keys.
+    - If loading fails, raises an informative error.
     """
     checkpoint = torch.load(checkpoint_path, map_location=device)
 
     if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
         state_dict = checkpoint['model_state_dict']
         embedding_dim = checkpoint.get('embedding_dim', 256)
-        # Prefer checkpoint-stored fusion_type/output_dim, fall back to args
-        ckpt_fusion_type = checkpoint.get('fusion_type', fusion_type)
+        # Prefer checkpoint-stored fusion_type, then detect from state_dict, then use args
+        if 'fusion_type' in checkpoint:
+            ckpt_fusion_type = checkpoint['fusion_type']
+        else:
+            ckpt_fusion_type = _detect_fusion_type_from_state_dict(state_dict)
         ckpt_output_dim = checkpoint.get('output_dim', output_dim)
         hidden_dim = checkpoint.get('hidden_dim', 512)
 
@@ -108,13 +126,20 @@ def load_fusion_model(
         )
         model.load_state_dict(state_dict)
     else:
-        # Construct with requested output_dim and fusion_type
-        model = FeatureFusionModule(fusion_type=fusion_type, output_dim=output_dim)
+        # Construct with detected or requested output_dim and fusion_type
         if isinstance(checkpoint, dict):
+            # Try to detect fusion type from state_dict
+            detected_fusion_type = _detect_fusion_type_from_state_dict(checkpoint)
+            model = FeatureFusionModule(
+                fusion_type=detected_fusion_type,
+                output_dim=output_dim
+            )
             try:
                 model.load_state_dict(checkpoint)
-            except Exception:
-                model = checkpoint
+            except RuntimeError as e:
+                print(f"⚠ Failed to load state_dict with detected fusion type '{detected_fusion_type}'.")
+                print(f"  State dict keys: {list(checkpoint.keys())[:5]}...")
+                raise e
         else:
             model = checkpoint
 
