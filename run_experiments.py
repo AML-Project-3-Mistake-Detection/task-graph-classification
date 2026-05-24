@@ -26,8 +26,7 @@ param_grid = {
     'hidden_dim': [64, 128, 256],
     'num_layers': [2, 3, 4],
     'lr': [0.001, 0.0005, 0.0001],
-    'dropout': [0.3, 0.5],
-    'batch_size': [16]
+    'dropout': [0.3, 0.5]
 }
 
 # Output paths
@@ -39,14 +38,26 @@ PROGRESS_PATH = RESULTS_DIR / "grid_progress.json"
 parser = argparse.ArgumentParser(description="Grid search for optimal hyperparameters")
 parser.add_argument('--mode', type=str, default='loo', choices=['loo', 'standard'],
                     help='Evaluation mode: loo (precise, ~6min/config), standard (fast, ~20s/config)')
+parser.add_argument('--data_path', type=str, default='data/processed_graphs.pt',
+                    help='Path to preprocessed graphs (.pt file)')
+
 args = parser.parse_args()
 
 eval_mode = args.mode
+data_path = args.data_path
+# Extract dataset name from path for CSV naming (e.g., processed_graphs_258.pt -> _258)
+dataset_suffix = Path(data_path).stem.replace('processed_graphs', '')
+
 if eval_mode == 'standard':
-    GRID_RESULTS_PATH = RESULTS_DIR / "grid_search_standard.csv"
-    print(f"⚡ FAST MODE: Standard 80/20 split (~30 min for 108 configs)")
+    GRID_RESULTS_PATH = RESULTS_DIR / f"grid_search_standard{dataset_suffix}.csv"
+    print(f"⚡ FAST MODE: Standard 80/20 split")
+    print(f"📊 Using dataset: {data_path}")
+    print(f"💾 Results will be saved to: {GRID_RESULTS_PATH}")
 else:
-    print(f"🎯 PRECISE MODE: LOO cross-validation (~10+ hours for 108 configs)")
+    GRID_RESULTS_PATH = RESULTS_DIR / f"loo_results_grid{dataset_suffix}.csv"
+    print(f"🎯 PRECISE MODE: LOO cross-validation")
+    print(f"📊 Using dataset: {data_path}")
+    print(f"💾 Results will be saved to: {GRID_RESULTS_PATH}")
 
 print()
 
@@ -119,6 +130,7 @@ for i, params in enumerate(combinations):
     cmd = [
         "python", "train.py",
         "--eval_mode", eval_mode,  # ⚡ Use --mode argument
+        "--data_path", data_path,
         "--model_type", params['model_type'],
         "--hidden_dim", str(params['hidden_dim']),
         "--num_layers", str(params['num_layers']),
