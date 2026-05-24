@@ -26,7 +26,8 @@ param_grid = {
     'hidden_dim': [64, 128, 256],
     'num_layers': [2, 3, 4],
     'lr': [0.001, 0.0005, 0.0001],
-    'dropout': [0.3, 0.5]
+    'dropout': [0.3, 0.5],
+    'batch_size': [16]
 }
 
 # Output paths
